@@ -1,0 +1,15 @@
+# CM1 output and binaries (too large for GitHub)
+shared/cm1_cd/run/cm1out_*.nc
+shared/cm1_cd/run/cm1out_pdata_*.nc
+shared/cm1_cd/run/cm1.exe
+# Onefile
+onefile.F
+# Fortran/C build artifacts
+*.o
+*.mod
+*.f90
+*.pyc
+*.bin
+# Data files
+*.dat*
+*.nc

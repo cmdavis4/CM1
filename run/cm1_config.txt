@@ -1,0 +1,67 @@
+ 
+   CM1 version: cm1r21.1
+ 
+   nx                        =          750
+   ny                        =          440
+   nz                        =          108
+ 
+   imoist                    =            1
+   sgsmodel                  =            2
+   tconfig                   =            2
+   bcturbs                   =            1
+   ptype                     =            5
+   wbc                       =            2
+   ebc                       =            2
+   sbc                       =            2
+   nbc                       =            2
+   bbc                       =            1
+   tbc                       =            1
+   iorigin                   =            1
+   axisymm                   =            0
+   iptra                     =            0
+   npt                       =            1
+ 
+   fcor                      =   0.0000000E+00
+ 
+   radopt                    =            0
+ 
+   sfcmodel                  =            0
+   oceanmodel                =            0
+   ipbl                      =            0
+ 
+   iice                      =            1
+   idm                       =            1
+   idmplus                   =            0
+   numq                      =           10
+   nql1                      =            2
+   nql2                      =            3
+   nqs1                      =            4
+   nqs2                      =            6
+   nnc1                      =            7
+   nnc2                      =           10
+   nzl1                      =           -2
+   nzl2                      =           -2
+   nvl1                      =           -2
+   nvl2                      =           -2
+ 
+   c_m                       =   0.1000000    
+   c_e1                      =   0.2000017    
+   c_e2                      =   0.7869588    
+   c_s                       =   0.1784124    
+ 
+   cgs1                      =    1.871472    
+   cgs2                      =   -1.242318    
+   cgs3                      =   0.3708459    
+ 
+   dgs1                      =   -1.991022    
+   dgs2                      =    2.979520    
+   dgs3                      =  -0.9884985    
+ 
+   cgt1                      =    1.878559    
+   cgt2                      =   -1.257762    
+   cgt3                      =   0.3792031    
+ 
+   dgt1                      =    2.009030    
+   dgt2                      =   -3.020660    
+   dgt3                      =    1.011629    
+ 
