@@ -13,3 +13,5 @@ onefile.F
 # Data files
 *.dat*
 *.nc
+# Makefile
+Makefile
