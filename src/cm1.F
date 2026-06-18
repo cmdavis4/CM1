@@ -283,6 +283,9 @@
       real :: prcl_mcol
       double precision :: prcl_mtot,prcl_target
       real, dimension(:), allocatable :: prcl_cummass
+      ! optional seeding bounding box (var9..var14), density mode (var18=2):
+      real :: prcl_bx0,prcl_bx1,prcl_by0,prcl_by1,prcl_bz0,prcl_bz1
+      real :: prcl_mlo,prcl_mhi,prcl_frac
       integer :: prcl_nfile
       character(len=256) :: prcl_cline
 
@@ -2335,11 +2338,46 @@
         ENDIF
         allocate( prcl_cummass(1:nk+1) )
         call parcel_massprofile(zf,rho0,qv0,prcl_cummass,prcl_mcol)
+        ! Resolve the optional bounding box (var9..var14) EXACTLY as init3d.F
+        ! does, so the count matches the (boxed) placement: nparcels =
+        ! var19 * (dry-air mass INSIDE the box).  Per axis, a non-positive-
+        ! width range (max<=min, e.g. both at the default 0) falls back to the
+        ! full domain extent for that axis.  Without this, var18=2 + a box
+        ! would size nparcels from the whole domain and cram them all into the
+        ! box, so the box n* would be much larger than var19.
+        prcl_bx0 = var9  ; prcl_bx1 = var10
+        prcl_by0 = var11 ; prcl_by1 = var12
+        prcl_bz0 = var13 ; prcl_bz1 = var14
+        if( prcl_bx1.le.prcl_bx0 )then ; prcl_bx0 = minx ; prcl_bx1 = maxx ; endif
+        if( prcl_by1.le.prcl_by0 )then ; prcl_by0 = miny ; prcl_by1 = maxy ; endif
+        if( prcl_bz1.le.prcl_bz0 )then ; prcl_bz0 = zf(1,1,1) ; prcl_bz1 = zf(1,1,nk+1) ; endif
+        prcl_bz0 = min( max( prcl_bz0 , zf(1,1,1) ) , zf(1,1,nk+1) )
+        prcl_bz1 = min( max( prcl_bz1 , zf(1,1,1) ) , zf(1,1,nk+1) )
+        ! cumulative dry-air mass at each z bound (face-linear interpolation):
+        prcl_mlo = prcl_cummass(1)
+        prcl_mhi = prcl_cummass(1)
+        do k=1,nk
+          if( prcl_bz0.ge.zf(1,1,k) .and. prcl_bz0.le.zf(1,1,k+1) )then
+            prcl_frac = ( prcl_bz0 - zf(1,1,k) )                           &
+                      / max( zf(1,1,k+1)-zf(1,1,k) , 1.0e-30 )
+            prcl_mlo  = prcl_cummass(k) + prcl_frac*( prcl_cummass(k+1)-prcl_cummass(k) )
+            exit
+          endif
+        enddo
+        do k=1,nk
+          if( prcl_bz1.ge.zf(1,1,k) .and. prcl_bz1.le.zf(1,1,k+1) )then
+            prcl_frac = ( prcl_bz1 - zf(1,1,k) )                           &
+                      / max( zf(1,1,k+1)-zf(1,1,k) , 1.0e-30 )
+            prcl_mhi  = prcl_cummass(k) + prcl_frac*( prcl_cummass(k+1)-prcl_cummass(k) )
+            exit
+          endif
+        enddo
         deallocate( prcl_cummass )
-        ! total domain dry-air mass (kg) and requested parcel count (double
-        ! precision: Mtot can be ~1e16, and the product must be checked before
-        ! nint() to avoid silent 32-bit integer overflow):
-        prcl_mtot   = dble(prcl_mcol)*dble(maxx-minx)*dble(maxy-miny)
+        ! box dry-air mass (kg) and requested parcel count (double precision:
+        ! Mtot can be ~1e16, and the product must be checked before nint() to
+        ! avoid silent 32-bit integer overflow).  (mhi-mlo) is the column dry-
+        ! air mass per unit area within [bz0,bz1].
+        prcl_mtot   = dble(prcl_mhi-prcl_mlo)*dble(prcl_bx1-prcl_bx0)*dble(prcl_by1-prcl_by0)
         prcl_target = dble(var19)*prcl_mtot                ! var19 = parcels per kg dry air
         IF( prcl_target.gt.dble(huge(nparcels)) )THEN
           if(dowr)then
@@ -2358,7 +2396,10 @@
         if(dowr) write(outfile,*)
         if(dowr) write(outfile,*) '  mass-weighted parcels (density mode):'
         if(dowr) write(outfile,*) '    var19 (parcels/kg dry air) = ',var19
-        if(dowr) write(outfile,*) '    Mtot  (kg dry air)         = ',prcl_mtot
+        if(dowr) write(outfile,*) '    seeding box x (m)          = ',prcl_bx0,prcl_bx1
+        if(dowr) write(outfile,*) '    seeding box y (m)          = ',prcl_by0,prcl_by1
+        if(dowr) write(outfile,*) '    seeding box z (m ASL)      = ',prcl_bz0,prcl_bz1
+        if(dowr) write(outfile,*) '    Mtot  (kg dry air in box)  = ',prcl_mtot
         if(dowr) write(outfile,*) '    nparcels                   = ',nparcels
         if(dowr) write(outfile,*)
       ENDIF

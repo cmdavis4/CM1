@@ -165,6 +165,9 @@
       ! mass-weighted parcel initialization (var18=1,2):
       real :: prcl_mcol,prcl_mm,prcl_frac
       real, dimension(:), allocatable :: prcl_cummass
+      ! optional bounding box for mass-weighted placement (var9..var14):
+      real :: prcl_bx0,prcl_bx1,prcl_by0,prcl_by1,prcl_bz0,prcl_bz1
+      real :: prcl_mlo,prcl_mhi
       ! distributed parcels (var17=1):
       real :: prcl_px,prcl_py,prcl_pz
       logical :: prcl_stored
@@ -452,11 +455,19 @@
       ELSE
         !---------------------------------------------------------------!
         ! var18 = 1 or 2:  mass-weighted (equal dry-air-mass) parcels.  !
-        !   - x,y drawn uniformly over the domain                       !
+        !   - x,y drawn uniformly over the (boxed) domain               !
         !   - z drawn from the dry-air mass pdf (rhod0 = rho0/(1+qv0))   !
         ! so that the horizontally-averaged specific number density     !
         ! (parcels per kg dry air) is constant with height.             !
         ! ref: Jackson (1997); n* = n/rho_a conserved, see paper Fig 3. !
+        !                                                               !
+        ! Optional bounding box (var9..var14): restrict seeding to      !
+        !   [var9,var10] x [var11,var12] x [var13,var14] (x,y in m;     !
+        !   z in m ASL) while keeping the uniform n* mass weighting     !
+        !   WITHIN the box.  Per axis, if max<=min (e.g. both left at    !
+        !   the default 0) the full domain extent is used for that axis,!
+        !   so the box is opt-in and can be applied to any subset of    !
+        !   the three axes.                                             !
         !---------------------------------------------------------------!
         if(dowr) write(outfile,*) '  Mass-weighted parcel placement (var18 = ',nint(var18),')'
 
@@ -479,6 +490,48 @@
         call parcel_massprofile(zf,rho0,qv0,prcl_cummass,prcl_mcol)
         if(dowr) write(outfile,*) '  Mcol (kg dry air / m^2) = ',prcl_mcol
 
+        ! resolve the optional bounding box (var9..var14).  Per axis, a
+        ! non-positive-width range (max<=min, e.g. both at the default 0)
+        ! falls back to the full domain extent for that axis.
+        prcl_bx0 = var9  ; prcl_bx1 = var10
+        prcl_by0 = var11 ; prcl_by1 = var12
+        prcl_bz0 = var13 ; prcl_bz1 = var14
+        if( prcl_bx1.le.prcl_bx0 )then ; prcl_bx0 = minx ; prcl_bx1 = maxx ; endif
+        if( prcl_by1.le.prcl_by0 )then ; prcl_by0 = miny ; prcl_by1 = maxy ; endif
+        if( prcl_bz1.le.prcl_bz0 )then ; prcl_bz0 = zf(1,1,1) ; prcl_bz1 = zf(1,1,nk+1) ; endif
+        ! clamp z bounds into the column.
+        prcl_bz0 = min( max( prcl_bz0 , zf(1,1,1) ) , zf(1,1,nk+1) )
+        prcl_bz1 = min( max( prcl_bz1 , zf(1,1,1) ) , zf(1,1,nk+1) )
+        ! resolve the cumulative dry-air mass at each z bound (same
+        ! face-linear interpolation used by the inversion below), so the
+        ! vertical draw can be confined to the box yet stay mass-weighted:
+        ! drawing prcl_mm uniformly in [mlo,mhi] reproduces the column's
+        ! mass pdf shape restricted to [bz0,bz1].
+        prcl_mlo = prcl_cummass(1)
+        prcl_mhi = prcl_cummass(1)
+        do kk=1,nk
+          if( prcl_bz0.ge.zf(1,1,kk) .and. prcl_bz0.le.zf(1,1,kk+1) )then
+            prcl_frac = ( prcl_bz0 - zf(1,1,kk) )                          &
+                      / max( zf(1,1,kk+1)-zf(1,1,kk) , 1.0e-30 )
+            prcl_mlo  = prcl_cummass(kk) + prcl_frac*( prcl_cummass(kk+1)-prcl_cummass(kk) )
+            exit
+          endif
+        enddo
+        do kk=1,nk
+          if( prcl_bz1.ge.zf(1,1,kk) .and. prcl_bz1.le.zf(1,1,kk+1) )then
+            prcl_frac = ( prcl_bz1 - zf(1,1,kk) )                          &
+                      / max( zf(1,1,kk+1)-zf(1,1,kk) , 1.0e-30 )
+            prcl_mhi  = prcl_cummass(kk) + prcl_frac*( prcl_cummass(kk+1)-prcl_cummass(kk) )
+            exit
+          endif
+        enddo
+        if(dowr)then
+          write(outfile,*) '  parcel seeding box x (m)     =',prcl_bx0,prcl_bx1
+          write(outfile,*) '  parcel seeding box y (m)     =',prcl_by0,prcl_by1
+          write(outfile,*) '  parcel seeding box z (m ASL) =',prcl_bz0,prcl_bz1
+          write(outfile,*) '  box dry-air mass fraction    =',(prcl_mhi-prcl_mlo)/max(prcl_mcol,1.0e-30)
+        endif
+
         ! NOTE: every rank generates the SAME global parcel sequence (same
         ! seed); legacy stores all of them, distributed keeps only locals.
         do n=1,nparcels
@@ -486,7 +539,7 @@
           ! cummass is monotonic increasing, so binary-search for the largest
           ! kk with cummass(kk) <= mm (O(log nk), not O(nk) -- matters at 1e9).
           call random_number(rand)
-          prcl_mm = rand*prcl_mcol
+          prcl_mm = prcl_mlo + rand*(prcl_mhi-prcl_mlo)
           prcl_klo = 1
           prcl_khi = nk+1
           do while( (prcl_khi-prcl_klo).gt.1 )
@@ -501,12 +554,12 @@
           prcl_frac = ( prcl_mm - prcl_cummass(kk) )                       &
                     / max( prcl_cummass(kk+1)-prcl_cummass(kk) , 1.0e-30 )
           prcl_pz = zf(1,1,kk) + prcl_frac*( zf(1,1,kk+1)-zf(1,1,kk) )
-          prcl_pz = min( max( prcl_pz , zf(1,1,1) ) , zf(1,1,nk+1) )
-          ! horizontal: uniform random over the domain
+          prcl_pz = min( max( prcl_pz , prcl_bz0 ) , prcl_bz1 )
+          ! horizontal: uniform random over the (boxed) domain
           call random_number(rand)
-          prcl_px = minx + rand*(maxx-minx)
+          prcl_px = prcl_bx0 + rand*(prcl_bx1-prcl_bx0)
           call random_number(rand)
-          prcl_py = miny + rand*(maxy-miny)
+          prcl_py = prcl_by0 + rand*(prcl_by1-prcl_by0)
           ! store (legacy -> global pdata; distributed -> local arrays):
           call parcel_emit(n,prcl_px,prcl_py,prcl_pz,pdata,xf,yf)
         enddo
