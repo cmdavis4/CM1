@@ -80,6 +80,7 @@
       use module_mp_nssl_2mom, only: ccn, lccn, irenuc
       use poiss_module
       use parcel_module , only : getparcelzs , parcel_massprofile ,    &
+                                 parcel_resolve_box ,                  &
                                  parcel_alloc_local , parcel_append_local , parcel_global_count , &
                                  parcel_fixup_2d , parcel_emit , np_loc
 #ifdef MPI
@@ -490,41 +491,13 @@
         call parcel_massprofile(zf,rho0,qv0,prcl_cummass,prcl_mcol)
         if(dowr) write(outfile,*) '  Mcol (kg dry air / m^2) = ',prcl_mcol
 
-        ! resolve the optional bounding box (var9..var14).  Per axis, a
-        ! non-positive-width range (max<=min, e.g. both at the default 0)
-        ! falls back to the full domain extent for that axis.
-        prcl_bx0 = var9  ; prcl_bx1 = var10
-        prcl_by0 = var11 ; prcl_by1 = var12
-        prcl_bz0 = var13 ; prcl_bz1 = var14
-        if( prcl_bx1.le.prcl_bx0 )then ; prcl_bx0 = minx ; prcl_bx1 = maxx ; endif
-        if( prcl_by1.le.prcl_by0 )then ; prcl_by0 = miny ; prcl_by1 = maxy ; endif
-        if( prcl_bz1.le.prcl_bz0 )then ; prcl_bz0 = zf(1,1,1) ; prcl_bz1 = zf(1,1,nk+1) ; endif
-        ! clamp z bounds into the column.
-        prcl_bz0 = min( max( prcl_bz0 , zf(1,1,1) ) , zf(1,1,nk+1) )
-        prcl_bz1 = min( max( prcl_bz1 , zf(1,1,1) ) , zf(1,1,nk+1) )
-        ! resolve the cumulative dry-air mass at each z bound (same
-        ! face-linear interpolation used by the inversion below), so the
-        ! vertical draw can be confined to the box yet stay mass-weighted:
-        ! drawing prcl_mm uniformly in [mlo,mhi] reproduces the column's
-        ! mass pdf shape restricted to [bz0,bz1].
-        prcl_mlo = prcl_cummass(1)
-        prcl_mhi = prcl_cummass(1)
-        do kk=1,nk
-          if( prcl_bz0.ge.zf(1,1,kk) .and. prcl_bz0.le.zf(1,1,kk+1) )then
-            prcl_frac = ( prcl_bz0 - zf(1,1,kk) )                          &
-                      / max( zf(1,1,kk+1)-zf(1,1,kk) , 1.0e-30 )
-            prcl_mlo  = prcl_cummass(kk) + prcl_frac*( prcl_cummass(kk+1)-prcl_cummass(kk) )
-            exit
-          endif
-        enddo
-        do kk=1,nk
-          if( prcl_bz1.ge.zf(1,1,kk) .and. prcl_bz1.le.zf(1,1,kk+1) )then
-            prcl_frac = ( prcl_bz1 - zf(1,1,kk) )                          &
-                      / max( zf(1,1,kk+1)-zf(1,1,kk) , 1.0e-30 )
-            prcl_mhi  = prcl_cummass(kk) + prcl_frac*( prcl_cummass(kk+1)-prcl_cummass(kk) )
-            exit
-          endif
-        enddo
+        ! resolve the optional bounding box (var9..var14): per-axis
+        ! defaults, clamp-to-domain, fatal on a fully-outside box, plus the
+        ! cumulative dry-air mass at the z bounds.  Shared with cm1.F's
+        ! count derivation so placement and count cannot drift.
+        call parcel_resolve_box(zf,prcl_cummass,                         &
+                                prcl_bx0,prcl_bx1,prcl_by0,prcl_by1,     &
+                                prcl_bz0,prcl_bz1,prcl_mlo,prcl_mhi)
         if(dowr)then
           write(outfile,*) '  parcel seeding box x (m)     =',prcl_bx0,prcl_bx1
           write(outfile,*) '  parcel seeding box y (m)     =',prcl_by0,prcl_by1

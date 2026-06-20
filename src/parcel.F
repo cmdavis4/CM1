@@ -4,7 +4,7 @@
 
   private
   public :: parcel_driver,parcel_interp,parcel_write,setup_parcel_vars,getparcelzs
-  public :: parcel_massprofile
+  public :: parcel_massprofile,parcel_resolve_box
   public :: parcel_alloc_local,parcel_append_local,parcel_global_count,parcel_fixup_2d
   public :: parcel_emit,parcel_gather,parcel_gather_positions,parcel_write_par
   public :: np_loc
@@ -20,6 +20,17 @@
   integer :: np_max = 0                  ! allocated local capacity
   real,    allocatable, target :: pdl(:,:)   ! local parcel data (np_max,npvals)
   integer, allocatable :: pidl(:)        ! global parcel id  (np_max)
+
+  !-------------------------------------------------------------------------
+  !  Scalar-point output registry entry (see parcel_interp).  Each entry
+  !  pairs a scalar-point source field with the parcel-output column it
+  !  feeds.  This lets the scalar interpolation be a single loop instead of
+  !  one hand-written, shape-aware tri_interp call per variable -- adding a
+  !  new scalar output is then one line, with no grid-shape/weight bookkeeping.
+  !-------------------------------------------------------------------------
+  type p3d
+    real, pointer :: f(:,:,:)
+  end type p3d
 
   CONTAINS
 
@@ -747,20 +758,20 @@
       real, intent(in), dimension(kb:ke) :: rds
       real, intent(in), dimension(itb:ite,jtb:jte) :: gz
       real, intent(in), dimension(ib:ie,jb:je,kb:ke) :: pi0,th0,thv0,qv0,qc0,qi0,rth0
-      real, intent(inout), dimension(ib:ie,jb:je,kb:ke) :: dum1,dum2,dum3,dum4,zv,qt,prs,rho
+      real, intent(inout), dimension(ib:ie,jb:je,kb:ke), target :: dum1,dum2,dum3,dum4,zv,qt,prs,rho
       real, intent(inout), dimension(ib:ie,jb:je,kb:ke) :: dum7,dum8
       real, intent(inout), dimension(ib:ie+1,jb:je,kb:ke) :: u3d
       real, intent(inout), dimension(ib:ie,jb:je+1,kb:ke) :: v3d
       real, intent(inout), dimension(ib:ie,jb:je,kb:ke+1) :: w3d,buoy,vpg
       real, intent(in), dimension(ib:ie,jb:je,kb:ke) :: pp3d,th3d
-      real, intent(inout), dimension(ib:ie,jb:je,kb:ke) :: th,t
-      real, intent(inout), dimension(ibm:iem,jbm:jem,kbm:kem,numq) :: q3d
+      real, intent(inout), dimension(ib:ie,jb:je,kb:ke), target :: th,t
+      real, intent(inout), dimension(ibm:iem,jbm:jem,kbm:kem,numq), target :: q3d
       real, intent(inout), dimension(ibc:iec,jbc:jec,kbc:kec) :: kmh,kmv,khh,khv
       real, intent(inout), dimension(ibt:iet,jbt:jet,kbt:ket) :: tke3d
-      real, intent(inout), dimension(ibp:iep,jbp:jep,kbp:kep,npt) :: pt3d
+      real, intent(inout), dimension(ibp:iep,jbp:jep,kbp:kep,npt), target :: pt3d
       real, intent(inout), dimension(nparcels,npvals), target :: pdata
       real, intent(inout) , dimension(ibdt:iedt,jbdt:jedt,kbdt:kedt,ntdiag) :: tdiag
-      real, intent(inout) , dimension(ibdq:iedq,jbdq:jedq,kbdq:kedq,nqdiag) :: qdiag
+      real, intent(inout) , dimension(ibdq:iedq,jbdq:jedq,kbdq:kedq,nqdiag), target :: qdiag
       real, intent(inout), dimension(jmp,kmp) :: pw1,pw2,pe1,pe2
       real, intent(inout), dimension(imp,kmp) :: ps1,ps2,pn1,pn2
       real, intent(inout), dimension(kmt) :: nw1,nw2,ne1,ne2,sw1,sw2,se1,se2
@@ -777,6 +788,11 @@
       ! distributed parcels (var17=1): operate on local arrays (pdl) via pointer.
       real, pointer :: pwk(:,:)
       integer :: npp
+
+      ! scalar-point output registry (built once, consumed by the parcel loop)
+      type(p3d), dimension(maxvars) :: scl
+      integer,   dimension(maxvars) :: scl_slot
+      integer :: nscl
 
       logical, parameter :: debug = .false.
 
@@ -1139,6 +1155,59 @@
       npp =  np_loc
     ENDIF
 
+!----------------------------------------------------------------------
+!  Build the scalar-point output registry (once, before the parcel loop).
+!  Each line pairs a scalar-point source field with its output column
+!  (pr* slot).  The interpolation happens once, in the loop below, so to
+!  add a new scalar output you add ONE line here -- no grid-shape, weight,
+!  or tri_interp bookkeeping.  Fields on other stagger points (u,v,w and
+!  zvort) keep their own dedicated blocks below.
+
+    nscl = 0
+
+    IF( imoist.eq.1 )THEN
+      if( prdbz.ge.1 .and. qd_dbz.ge.1 )then
+        nscl=nscl+1 ; scl(nscl)%f => qdiag(:,:,:,qd_dbz) ; scl_slot(nscl) = prdbz
+      endif
+      if( prqv.ge.1 )then
+        nscl=nscl+1 ; scl(nscl)%f => q3d(:,:,:,nqv) ; scl_slot(nscl) = prqv
+      endif
+      if( prq1.ge.1 )then
+        do n=nql1,nql1+(prq2-prq1)
+          nscl=nscl+1 ; scl(nscl)%f => q3d(:,:,:,n) ; scl_slot(nscl) = prq1+(n-nql1)
+        enddo
+      endif
+      if( prnc1.ge.1 )then
+        do n=nnc1,nnc1+(prnc2-prnc1)
+          nscl=nscl+1 ; scl(nscl)%f => q3d(:,:,:,n) ; scl_slot(nscl) = prnc1+(n-nnc1)
+        enddo
+      endif
+      if( prqsl.ge.1 )then
+        nscl=nscl+1 ; scl(nscl)%f => dum1 ; scl_slot(nscl) = prqsl
+      endif
+      if( prqsi.ge.1 )then
+        nscl=nscl+1 ; scl(nscl)%f => dum2 ; scl_slot(nscl) = prqsi
+      endif
+    ENDIF
+
+    if( prth.ge.1 )then
+      nscl=nscl+1 ; scl(nscl)%f => th  ; scl_slot(nscl) = prth
+    endif
+    if( prt.ge.1 )then
+      nscl=nscl+1 ; scl(nscl)%f => t   ; scl_slot(nscl) = prt
+    endif
+    if( prprs.ge.1 )then
+      nscl=nscl+1 ; scl(nscl)%f => prs ; scl_slot(nscl) = prprs
+    endif
+    if( prrho.ge.1 )then
+      nscl=nscl+1 ; scl(nscl)%f => rho ; scl_slot(nscl) = prrho
+    endif
+    if( prpt1.ge.1 )then
+      do n=1,npt
+        nscl=nscl+1 ; scl(nscl)%f => pt3d(:,:,:,n) ; scl_slot(nscl) = prpt1+n-1
+      enddo
+    endif
+
     nploop2:  &
     DO np=1,npp
 
@@ -1479,41 +1548,10 @@
         endif
         ENDIF
 
-      if(imoist.eq.1)then
-        if( prdbz.ge.1 .and. qd_dbz.ge.1 )  &
-        call tri_interp(ni,nj,nk,i,j,k,w1,w2,w3,w4,w5,w6,w7,w8,qdiag(ibdq,jbdq,kbdq,qd_dbz),pwk(np,prdbz))
-        if(prqv.ge.1)  &
-        call tri_interp(ni,nj,nk,i,j,k,w1,w2,w3,w4,w5,w6,w7,w8,q3d(ib,jb,kb,nqv),pwk(np,prqv))
-        if(prq1.ge.1)then
-          do n=nql1,nql1+(prq2-prq1)
-            call tri_interp(ni,nj,nk,i,j,k,w1,w2,w3,w4,w5,w6,w7,w8,q3d(ib,jb,kb,n),pwk(np,prq1+(n-nql1)))
-          enddo
-        endif
-        if(prnc1.ge.1)then
-          do n=nnc1,nnc1+(prnc2-prnc1)
-            call tri_interp(ni,nj,nk,i,j,k,w1,w2,w3,w4,w5,w6,w7,w8,q3d(ib,jb,kb,n),pwk(np,prnc1+(n-nnc1)))
-          enddo
-        endif
-        if( prqsl.ge.1 )  &
-        call tri_interp(ni,nj,nk,i,j,k,w1,w2,w3,w4,w5,w6,w7,w8,dum1,pwk(np,prqsl))
-        if( prqsi.ge.1 )  &
-        call tri_interp(ni,nj,nk,i,j,k,w1,w2,w3,w4,w5,w6,w7,w8,dum2,pwk(np,prqsi))
-      endif
-
-        if( prth.ge.1 )  &
-        call tri_interp(ni,nj,nk,i,j,k,w1,w2,w3,w4,w5,w6,w7,w8,th ,pwk(np,prth))
-        if( prt.ge.1 )  &
-        call tri_interp(ni,nj,nk,i,j,k,w1,w2,w3,w4,w5,w6,w7,w8,t  ,pwk(np,prt ))
-        if( prprs.ge.1 )  &
-        call tri_interp(ni,nj,nk,i,j,k,w1,w2,w3,w4,w5,w6,w7,w8,prs,pwk(np,prprs))
-        if( prrho.ge.1 )  &
-        call tri_interp(ni,nj,nk,i,j,k,w1,w2,w3,w4,w5,w6,w7,w8,rho,pwk(np,prrho))
-
-        if(prpt1.ge.1)then
-          do n=1,npt
-          call tri_interp(ni,nj,nk,i,j,k,w1,w2,w3,w4,w5,w6,w7,w8,pt3d(ib,jb,kb,n),pwk(np,prpt1+n-1))
-          enddo
-        endif
+        ! all scalar-point outputs, driven by the registry built above:
+        do n=1,nscl
+          call tri_interp(ni,nj,nk,i,j,k,w1,w2,w3,w4,w5,w6,w7,w8,scl(n)%f,pwk(np,scl_slot(n)))
+        enddo
 
 !----------------------------------------------------------------------
 !  Data on zvort points
@@ -2317,6 +2355,104 @@
       mcol = cummass(nk+1)
 
       end subroutine parcel_massprofile
+
+
+!ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+
+
+      subroutine parcel_resolve_box(zf,cummass,                         &
+                                    bx0,bx1,by0,by1,bz0,bz1,mlo,mhi)
+      use input
+      implicit none
+
+!-----------------------------------------------------------------------
+!  Resolve the optional parcel seeding bounding box (var9..var14) into
+!  concrete, in-domain bounds plus the cumulative dry-air mass at the z
+!  bounds.  SINGLE source of truth, called by BOTH the count derivation
+!  (cm1.F, var18=2) and the placement (init3d.F) so the two cannot drift.
+!
+!    var9 ,var10 = x min,max (m)
+!    var11,var12 = y min,max (m)
+!    var13,var14 = z min,max (m ASL)
+!
+!  Per axis, a non-positive-width request (max<=min, e.g. both left at
+!  the default 0) falls back to the full domain extent for that axis, so
+!  the box is opt-in and per-axis.  Bounds are then CLAMPED to the domain
+!  ([minx,maxx], [miny,maxy], and the model column for z); clamping is
+!  reported.  A box that lands entirely outside the domain (zero or
+!  negative width after clamping) is a fatal error -- otherwise it would
+!  silently inflate nparcels (var18=2) and/or place parcels outside the
+!  domain (dropped in distributed mode -> conservation mismatch).
+!-----------------------------------------------------------------------
+
+      real, intent(in),  dimension(ib:ie,jb:je,kb:ke+1) :: zf
+      real, intent(in),  dimension(1:nk+1)              :: cummass
+      real, intent(out)  :: bx0,bx1,by0,by1,bz0,bz1,mlo,mhi
+
+      integer :: k
+      real :: frac
+      logical :: clamped
+
+      ! per-axis defaults: a non-positive-width request -> full domain.
+      bx0 = var9  ; bx1 = var10
+      by0 = var11 ; by1 = var12
+      bz0 = var13 ; bz1 = var14
+      if( bx1.le.bx0 )then ; bx0 = minx       ; bx1 = maxx         ; endif
+      if( by1.le.by0 )then ; by0 = miny       ; by1 = maxy         ; endif
+      if( bz1.le.bz0 )then ; bz0 = zf(1,1,1)  ; bz1 = zf(1,1,nk+1) ; endif
+
+      ! clamp to the domain; report if a user-supplied bound was moved.
+      clamped = .false.
+      if( bx0.lt.minx       )then ; bx0 = minx       ; clamped = .true. ; endif
+      if( bx1.gt.maxx       )then ; bx1 = maxx       ; clamped = .true. ; endif
+      if( by0.lt.miny       )then ; by0 = miny       ; clamped = .true. ; endif
+      if( by1.gt.maxy       )then ; by1 = maxy       ; clamped = .true. ; endif
+      if( bz0.lt.zf(1,1,1)    )then ; bz0 = zf(1,1,1)    ; clamped = .true. ; endif
+      if( bz1.gt.zf(1,1,nk+1) )then ; bz1 = zf(1,1,nk+1) ; clamped = .true. ; endif
+      if( clamped .and. dowr )then
+        write(outfile,*) '  WARNING: parcel seeding box clamped to the domain:'
+        write(outfile,*) '           x =',bx0,bx1
+        write(outfile,*) '           y =',by0,by1
+        write(outfile,*) '           z =',bz0,bz1
+      endif
+
+      ! a degenerate / entirely-outside box is fatal.
+      if( bx1.le.bx0 .or. by1.le.by0 .or. bz1.le.bz0 )then
+        if(dowr)then
+          write(outfile,*)
+          write(outfile,*) '  ERROR: parcel seeding box (var9..var14) is degenerate or'
+          write(outfile,*) '         lies entirely outside the domain (zero width after'
+          write(outfile,*) '         clamping).  resolved bounds:'
+          write(outfile,*) '         x =',bx0,bx1
+          write(outfile,*) '         y =',by0,by1
+          write(outfile,*) '         z =',bz0,bz1
+          write(outfile,*)
+        endif
+        call stopcm1
+      endif
+
+      ! cumulative dry-air mass at each z bound (same face-linear interp as
+      ! the placement inversion), so a vertical draw confined to [bz0,bz1]
+      ! stays mass-weighted: drawing uniformly in [mlo,mhi] reproduces the
+      ! column mass pdf restricted to the box.
+      mlo = cummass(1)
+      mhi = cummass(1)
+      do k=1,nk
+        if( bz0.ge.zf(1,1,k) .and. bz0.le.zf(1,1,k+1) )then
+          frac = ( bz0 - zf(1,1,k) ) / max( zf(1,1,k+1)-zf(1,1,k) , 1.0e-30 )
+          mlo  = cummass(k) + frac*( cummass(k+1)-cummass(k) )
+          exit
+        endif
+      enddo
+      do k=1,nk
+        if( bz1.ge.zf(1,1,k) .and. bz1.le.zf(1,1,k+1) )then
+          frac = ( bz1 - zf(1,1,k) ) / max( zf(1,1,k+1)-zf(1,1,k) , 1.0e-30 )
+          mhi  = cummass(k) + frac*( cummass(k+1)-cummass(k) )
+          exit
+        endif
+      enddo
+
+      end subroutine parcel_resolve_box
 
 
 !ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc

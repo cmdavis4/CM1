@@ -285,7 +285,7 @@
       real, dimension(:), allocatable :: prcl_cummass
       ! optional seeding bounding box (var9..var14), density mode (var18=2):
       real :: prcl_bx0,prcl_bx1,prcl_by0,prcl_by1,prcl_bz0,prcl_bz1
-      real :: prcl_mlo,prcl_mhi,prcl_frac
+      real :: prcl_mlo,prcl_mhi
       integer :: prcl_nfile
       character(len=256) :: prcl_cline
 
@@ -2338,40 +2338,15 @@
         ENDIF
         allocate( prcl_cummass(1:nk+1) )
         call parcel_massprofile(zf,rho0,qv0,prcl_cummass,prcl_mcol)
-        ! Resolve the optional bounding box (var9..var14) EXACTLY as init3d.F
-        ! does, so the count matches the (boxed) placement: nparcels =
-        ! var19 * (dry-air mass INSIDE the box).  Per axis, a non-positive-
-        ! width range (max<=min, e.g. both at the default 0) falls back to the
-        ! full domain extent for that axis.  Without this, var18=2 + a box
-        ! would size nparcels from the whole domain and cram them all into the
-        ! box, so the box n* would be much larger than var19.
-        prcl_bx0 = var9  ; prcl_bx1 = var10
-        prcl_by0 = var11 ; prcl_by1 = var12
-        prcl_bz0 = var13 ; prcl_bz1 = var14
-        if( prcl_bx1.le.prcl_bx0 )then ; prcl_bx0 = minx ; prcl_bx1 = maxx ; endif
-        if( prcl_by1.le.prcl_by0 )then ; prcl_by0 = miny ; prcl_by1 = maxy ; endif
-        if( prcl_bz1.le.prcl_bz0 )then ; prcl_bz0 = zf(1,1,1) ; prcl_bz1 = zf(1,1,nk+1) ; endif
-        prcl_bz0 = min( max( prcl_bz0 , zf(1,1,1) ) , zf(1,1,nk+1) )
-        prcl_bz1 = min( max( prcl_bz1 , zf(1,1,1) ) , zf(1,1,nk+1) )
-        ! cumulative dry-air mass at each z bound (face-linear interpolation):
-        prcl_mlo = prcl_cummass(1)
-        prcl_mhi = prcl_cummass(1)
-        do k=1,nk
-          if( prcl_bz0.ge.zf(1,1,k) .and. prcl_bz0.le.zf(1,1,k+1) )then
-            prcl_frac = ( prcl_bz0 - zf(1,1,k) )                           &
-                      / max( zf(1,1,k+1)-zf(1,1,k) , 1.0e-30 )
-            prcl_mlo  = prcl_cummass(k) + prcl_frac*( prcl_cummass(k+1)-prcl_cummass(k) )
-            exit
-          endif
-        enddo
-        do k=1,nk
-          if( prcl_bz1.ge.zf(1,1,k) .and. prcl_bz1.le.zf(1,1,k+1) )then
-            prcl_frac = ( prcl_bz1 - zf(1,1,k) )                           &
-                      / max( zf(1,1,k+1)-zf(1,1,k) , 1.0e-30 )
-            prcl_mhi  = prcl_cummass(k) + prcl_frac*( prcl_cummass(k+1)-prcl_cummass(k) )
-            exit
-          endif
-        enddo
+        ! Resolve the optional bounding box (var9..var14) via the SHARED
+        ! routine that init3d.F also uses, so the count matches the (boxed)
+        ! placement: nparcels = var19 * (dry-air mass INSIDE the box).
+        ! Without this, var18=2 + a box would size nparcels from the whole
+        ! domain and cram them all into the box, so the box n* would be much
+        ! larger than var19.
+        call parcel_resolve_box(zf,prcl_cummass,                         &
+                                prcl_bx0,prcl_bx1,prcl_by0,prcl_by1,     &
+                                prcl_bz0,prcl_bz1,prcl_mlo,prcl_mhi)
         deallocate( prcl_cummass )
         ! box dry-air mass (kg) and requested parcel count (double precision:
         ! Mtot can be ~1e16, and the product must be checked before nint() to
