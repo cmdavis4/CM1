@@ -255,7 +255,7 @@
 
       integer count,rate,maxr
       real :: rtime,xtime,time_solve,time_solve0,cfl_target,ks_target,kminit,khinit
-      real :: steptime1,steptime2
+      real :: steptime1,steptime2,wrtime
       integer :: i,j,k,k1,k2,n,nn,fnum,frec
       real :: sum,tem0,tem
       logical :: getsfc,getpbl,update_sfc,startup,restarted,restart_prcl,reset
@@ -4125,7 +4125,12 @@
           enddo
         endif
         if(myid.eq.0) print *,'  next taptim = ',taptim
-        if(timestats.ge.1) time_write=time_write+mytime()
+        if(timestats.ge.1)then
+          wrtime = mytime()
+          time_write = time_write+wrtime
+          if(timestats.eq.2 .and. myid.eq.0) write(6,158) nwrite-1,wrtime
+158       format('    timing for write step ',i12,':',f12.4,' s')
+        endif
       endif
 
 
