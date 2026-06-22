@@ -15,3 +15,5 @@ onefile.F
 *.nc
 # Makefile
 Makefile
+# Executable
+cm1.exe
