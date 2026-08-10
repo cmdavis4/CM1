@@ -334,7 +334,9 @@
       IF(output_format.eq.2)THEN
       IF( nloop.eq.2 )THEN
         ! netcdf stuff:
-        if( output_filetype.eq.3 .or. myid.eq.0 )then
+        ! filetype=3 (per-rank) and filetype=4 (parallel collective) need ALL
+        ! ranks to open/define the file; filetype=1/2 only rank 0.
+        if( output_filetype.eq.3 .or. output_filetype.eq.4 .or. myid.eq.0 )then
             if(dowr) write(outfile,*) '  calling netcdf_prelim ... '
             call netcdf_prelim(rtime,nwrite,fnum,ncid,time_index,qname,                      &
                                name_output,desc_output,unit_output,grid_output,cmpr_output,  &
@@ -8794,6 +8796,7 @@
     integer, intent(in) :: mynode,nodeleader,nodes
 
     integer :: i,j,k
+    integer :: i0,j0,nlev,nitmp,njtmp
 #ifdef NETCDF
     integer :: varid,status
 #endif
@@ -8881,6 +8884,50 @@
       ENDDO
 #endif
     ENDIF
+
+  !ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  !-----   output_filetype = 4   ----------------------------------------------!
+  !ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  !  parallel collective writer: every rank writes its own (non-overlapping)
+  !  subdomain tile into the single shared, compressed netcdf file.
+
+  ELSEIF(output_filetype.eq.4)THEN
+#ifdef NETCDF
+      status = nf90_inq_varid(ncid,aname,varid)
+      if(status.ne.nf90_noerr)then
+        print *,'  Error1d in writeo, aname = ',aname
+        print *,nf90_strerror(status)
+        call stopcm1
+      endif
+      ! collective access is required for parallel writes to compressed variables:
+      call disp_err( nf90_var_par_access(ncid,varid,nf90_collective) , .true. )
+
+      ! this rank's global tile origin (1-based):
+      i0 = myi1p(myid+1)
+      j0 = myj1p(myid+1)
+
+      ! local extent to write.  For staggered grids the var holds ni+1 (u) or nj+1
+      ! (v) faces; adjacent tiles share the interior face, so only the east/north
+      ! edge rank writes the extra face (nxr-1==nx is the eastmost cell index).
+      ! Interior ranks drop their shared face (the neighbor writes it) -> the
+      ! global nx+1 / ny+1 grid is tiled with no overlapping (illegal) writes.
+      nitmp = numi
+      njtmp = numj
+      if( numi.gt.ni .and. myi2p(myid+1).ne.(nxr-1) ) nitmp = numi-1
+      if( numj.gt.nj .and. myj2p(myid+1).ne.(nyr-1) ) njtmp = numj-1
+
+      IF( numk1.eq.numk2 )THEN
+        ! 2d field: dims (x,y,time)
+        call disp_err( nf90_put_var(ncid,varid,var(1:nitmp,1:njtmp,numk1),        &
+                       (/i0,j0,time_index/),(/nitmp,njtmp,1/)) , .true. )
+      ELSE
+        ! 3d field: dims (x,y,z,time)
+        nlev = numk2-numk1+1
+        call disp_err( nf90_put_var(ncid,varid,var(1:nitmp,1:njtmp,numk1:numk2),  &
+                       (/i0,j0,numk1,time_index/),(/nitmp,njtmp,nlev,1/)) , .true. )
+      ENDIF
+#endif
+
   ENDIF
 #endif
 

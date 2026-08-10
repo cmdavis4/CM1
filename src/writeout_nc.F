@@ -28,6 +28,9 @@
                                dumz,dumx,dumy)
       use input
       use constants
+#ifdef MPI
+      use mpi
+#endif
 #ifdef NETCDF
       use netcdf
 #endif
@@ -105,7 +108,8 @@
   IF( fnum.eq.51 )THEN
     IF(output_filetype.eq.1)THEN
       string = 'cm1out.nc'
-    ELSEIF(output_filetype.eq.2)THEN
+    ELSEIF(output_filetype.eq.2 .or. output_filetype.eq.4)THEN
+      ! filetype=4 (parallel collective) uses the same one-file-per-time name as filetype=2
       string = 'cm1out_XXXXXX.nc'
       write(string(8:13),100) nwrite
     ELSEIF(output_filetype.eq.3)THEN
@@ -113,13 +117,13 @@
       write(string( 8:13),100) myid
       write(string(15:20),100) nwrite
     ELSE
-      if(dowr) write(outfile,*) '  for netcdf output, output_filetype must be either 1,2, or 3 '
+      if(dowr) write(outfile,*) '  for netcdf output, output_filetype must be either 1,2,3, or 4 '
       call stopcm1
     ENDIF
   ELSEIF( fnum.eq.71 )THEN
     IF(output_filetype.eq.1)THEN
       string = 'cm1out_i.nc'
-    ELSEIF(output_filetype.eq.2)THEN
+    ELSEIF(output_filetype.eq.2 .or. output_filetype.eq.4)THEN
       string = 'cm1out_XXXXXX_i.nc'
       write(string(8:13),100) nwrite
     ELSEIF(output_filetype.eq.3)THEN
@@ -127,7 +131,7 @@
       write(string( 8:13),100) myid
       write(string(15:20),100) nwrite
     ELSE
-      if(dowr) write(outfile,*) '  for netcdf output, output_filetype must be either 1,2, or 3 '
+      if(dowr) write(outfile,*) '  for netcdf output, output_filetype must be either 1,2,3, or 4 '
       call stopcm1
     ENDIF
   ELSE
@@ -142,7 +146,7 @@
 !--------------------------------------------------------------
 !  Dimensions of data:
 
-    IF( output_filetype.eq.1 .or. output_filetype.eq.2 )THEN
+    IF( output_filetype.eq.1 .or. output_filetype.eq.2 .or. output_filetype.eq.4 )THEN
       ival = nx
       jval = ny
       chkx = nx
@@ -212,7 +216,19 @@
       if( myid.eq.0 ) print *,'    string = ',string
 #ifdef NCFPLUS
 !--- works with netcdf 4.2, but not 4.0 (grumble)
+#ifdef MPI
+      IF( output_filetype.eq.4 )THEN
+        ! parallel collective writer: all ranks open the single shared file with
+        ! MPI-IO (mirrors writepdata_nc_par); each rank writes its tile below.
+        call disp_err( nf90_create( path=string ,                                   &
+             cmode=IOR(IOR(nf90_netcdf4,nf90_classic_model),nf90_mpiio) ,           &
+             ncid=ncid , comm=MPI_COMM_WORLD , info=MPI_INFO_NULL ) , .true. )
+      ELSE
+        call disp_err( nf90_create( path=string , cmode=IOR(nf90_netcdf4, nf90_classic_model) , ncid=ncid ) , .true. )
+      ENDIF
+#else
       call disp_err( nf90_create( path=string , cmode=IOR(nf90_netcdf4, nf90_classic_model) , ncid=ncid ) , .true. )
+#endif
 #else
       ! must do this for netcdf 4.0 (it seems) !
       call disp_err( nf90_create(path=string,cmode=0,ncid=ncid) , .true. )
@@ -310,7 +326,7 @@
 
       varloop:  &
       do n = 1,n_out
-        print *,'  n,name_output = ',n,name_output(n)
+        if( myid.eq.0 ) print *,'  n,name_output = ',n,name_output(n)
 !!!        if( myid.eq.0 ) print *,'  n = ',n,trim(name_output(n))
         if(     grid_output(n).eq.'s' )then
 !ORF keep original calls for reference
@@ -461,6 +477,11 @@
 !--------------------------------------------------
 ! begin data ... initial time ...
 
+    ! These are non-record coordinate/scalar values.  For the parallel collective
+    ! writer (output_filetype=4) every rank is in this routine, so only rank 0
+    ! writes them (independent access); other ranks skip.
+    coordwrite: IF( output_filetype.ne.4 .or. myid.eq.0 )THEN
+
     IF(icor.eq.1)THEN
       call disp_err( nf90_inq_varid(ncid,'f_cor',varid) , .true. )
       call disp_err( nf90_put_var(ncid,varid,fcor) , .true. )
@@ -470,7 +491,7 @@
       call disp_err( nf90_put_var(ncid,varid,outunitconv*ztop) , .true. )
 
         call disp_err( nf90_inq_varid(ncid,'xh',varid) , .true. )
-    if( output_filetype.eq.1 .or. output_filetype.eq.2 )then
+    if( output_filetype.eq.1 .or. output_filetype.eq.2 .or. output_filetype.eq.4 )then
       do i=1,nx
         dumx(i) = outunitconv*0.5*(xfref(i)+xfref(i+1))
       enddo
@@ -483,7 +504,7 @@
     endif
 
         call disp_err( nf90_inq_varid(ncid,'xf',varid) , .true. )
-    if( output_filetype.eq.1 .or. output_filetype.eq.2 )then
+    if( output_filetype.eq.1 .or. output_filetype.eq.2 .or. output_filetype.eq.4 )then
       do i=1,nx+1
         dumx(i) = outunitconv*xfref(i)
       enddo
@@ -496,7 +517,7 @@
     endif
 
         call disp_err( nf90_inq_varid(ncid,'yh',varid) , .true. )
-    if( output_filetype.eq.1 .or. output_filetype.eq.2 )then
+    if( output_filetype.eq.1 .or. output_filetype.eq.2 .or. output_filetype.eq.4 )then
       do j=1,ny
         dumy(j) = outunitconv*0.5*(yfref(j)+yfref(j+1))
       enddo
@@ -509,7 +530,7 @@
     endif
 
         call disp_err( nf90_inq_varid(ncid,'yf',varid) , .true. )
-    if( output_filetype.eq.1 .or. output_filetype.eq.2 )then
+    if( output_filetype.eq.1 .or. output_filetype.eq.2 .or. output_filetype.eq.4 )then
       do j=1,ny+1
         dumy(j) = outunitconv*yfref(j)
       enddo
@@ -547,6 +568,8 @@
         call disp_err( nf90_put_var(ncid,varid,dumz,(/1/),(/kvalp1/)) , .true. )
       endif
 
+      ENDIF coordwrite
+
       ! ... end if info at initial time only
 
 !----------------------------------------------------------
@@ -554,14 +577,25 @@
     ENDIF ifallinfo
 
       call disp_err( nf90_inq_varid(ncid,'time',varid) , stop_on_error )
+#ifdef MPI
+      ! filetype=4: writing the time record extends the unlimited dim, which in
+      ! parallel must be collective (all ranks put the same value).
+      if( output_filetype.eq.4 ) call disp_err( nf90_var_par_access(ncid,varid,nf90_collective) , stop_on_error )
+#endif
       call disp_err( nf90_put_var(ncid,varid,actual_time,(/time_index/)) , stop_on_error )
 
     if( imove.ge.1 )then
 
       call disp_err( nf90_inq_varid(ncid,'umove',varid) , stop_on_error )
+#ifdef MPI
+      if( output_filetype.eq.4 ) call disp_err( nf90_var_par_access(ncid,varid,nf90_collective) , stop_on_error )
+#endif
       call disp_err( nf90_put_var(ncid,varid,umove,(/time_index/)) , stop_on_error )
 
       call disp_err( nf90_inq_varid(ncid,'vmove',varid) , stop_on_error )
+#ifdef MPI
+      if( output_filetype.eq.4 ) call disp_err( nf90_var_par_access(ncid,varid,nf90_collective) , stop_on_error )
+#endif
       call disp_err( nf90_put_var(ncid,varid,vmove,(/time_index/)) , stop_on_error )
 
     endif

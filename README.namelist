@@ -1270,6 +1270,20 @@
                           but this is the most efficient way to write output
                           for MPI runs with very large number of processes
                           (say, > 200).
+                      4 = (cm1_cd extension) for MPI runs only:  like type 2
+                          (one combined file per output time, cm1out_NNNNNN.nc),
+                          but written in PARALLEL -- every rank writes its own
+                          subdomain directly into the shared file using
+                          collective MPI-IO + compression, instead of gathering
+                          everything to rank 0.  This removes the serial rank-0
+                          write bottleneck of types 1/2 while keeping a single,
+                          ready-to-analyze file per time (no post-hoc combine
+                          like type 3).  Requires output_format=2 (netcdf) and a
+                          parallel netcdf/HDF5 build (>=1.10.3 for compression).
+                          Run with:  export OMPI_MCA_io=romio321 and
+                          export OMPI_MCA_coll_hcoll_enable=0  (same as the
+                          parallel parcel writer).  Recommended for the large
+                          runs that motivated type 3.
 
  output_interp - For simulations with terrain, this option (0=no, 1=yes)
                  will generate a second set of output files, with "_i"

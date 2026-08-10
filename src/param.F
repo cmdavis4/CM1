@@ -6000,8 +6000,11 @@
       d3n = 1
       d3t = 1
 
-    IF( output_filetype.eq.1 .or. output_filetype.eq.2 )THEN
+    IF( output_filetype.eq.1 .or. output_filetype.eq.2 .or. output_filetype.eq.4 )THEN
 
+      ! output_filetype=4 (parallel collective writer) reuses this setup so that
+      ! rank 0 (a nodeleader) gets d2i/d2j large enough for the global coordinate
+      ! writes; the gather buffers (dat3) are allocated but unused by filetype=4.
       IF( myid.eq.nodeleader )THEN
 
         d2i   = (ni+1)*nodex
@@ -6042,7 +6045,7 @@
         print *
         print *,'  output_filetype = ',output_filetype
         print *
-        print *,'  output_filetype must be 1,2,3 '
+        print *,'  output_filetype must be 1,2,3,4 '
         print *
         endif
 #ifdef MPI
