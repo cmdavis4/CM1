@@ -8772,6 +8772,7 @@
 #ifdef NETCDF
     use netcdf
     use writeout_nc_module , only : disp_err
+    use quantize_module , only : bitround , nsd_to_nsb , nsd_gridded
 #endif
     implicit none
 
@@ -8799,6 +8800,11 @@
     integer :: i0,j0,nlev,nitmp,njtmp
 #ifdef NETCDF
     integer :: varid,status
+    integer :: nsb
+    ! work buffer for the optional lossy bit-trim on the filetype=4 path,
+    ! where the source array is intent(in) model state and must not be
+    ! modified.  Only allocated when bit-trimming is actually switched on.
+    real, allocatable, dimension(:,:,:) :: qbuf
 #endif
 
   !ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
@@ -8856,6 +8862,7 @@
         call stopcm1
       endif
       print *,'  ncid,aname,varid = ',ncid,aname,varid,var(1,1,1)
+      nsb = nsd_to_nsb( nsd_gridded(aname) )
       DO k=numk1,numk2
         !$omp parallel do default(shared)   &
         !$omp private(i,j)
@@ -8864,6 +8871,9 @@
           dat1(i,j)=var(i,j,k)
         enddo
         enddo
+        ! optional lossy bit-trim on the copy (no-op when nsb=0, i.e. when
+        ! output_signif_digits=0, which is the default)
+        call bitround( dat1(1:numi,1:numj) , nsb )
         if(numk1.eq.numk2)then
           status = nf90_put_var(ncid,varid,dat1,(/1,1,time_index/),(/numi,numj,1/))
           if(status.ne.nf90_noerr)then
@@ -8916,15 +8926,46 @@
       if( numi.gt.ni .and. myi2p(myid+1).ne.(nxr-1) ) nitmp = numi-1
       if( numj.gt.nj .and. myj2p(myid+1).ne.(nyr-1) ) njtmp = numj-1
 
-      IF( numk1.eq.numk2 )THEN
-        ! 2d field: dims (x,y,time)
-        call disp_err( nf90_put_var(ncid,varid,var(1:nitmp,1:njtmp,numk1),        &
-                       (/i0,j0,time_index/),(/nitmp,njtmp,1/)) , .true. )
+      nlev = numk2-numk1+1
+      nsb  = nsd_to_nsb( nsd_gridded(aname) )
+
+      IF( nsb.gt.0 )THEN
+        ! lossy: bit-trim a copy of this rank's tile.  var is intent(in) live
+        ! model state, so it must not be modified.  The array-section argument
+        ! used on the lossless path below already materializes a temporary of
+        ! this same shape, so this costs no extra peak memory in practice.
+        allocate( qbuf(nitmp,njtmp,nlev) )
+        !$omp parallel do default(shared)   &
+        !$omp private(i,j,k)
+        do k=1,nlev
+        do j=1,njtmp
+        do i=1,nitmp
+          qbuf(i,j,k) = var(i,j,numk1+k-1)
+        enddo
+        enddo
+        enddo
+        call bitround( qbuf , nsb )
+        IF( numk1.eq.numk2 )THEN
+          ! 2d field: dims (x,y,time)
+          call disp_err( nf90_put_var(ncid,varid,qbuf(:,:,1),                       &
+                         (/i0,j0,time_index/),(/nitmp,njtmp,1/)) , .true. )
+        ELSE
+          ! 3d field: dims (x,y,z,time)
+          call disp_err( nf90_put_var(ncid,varid,qbuf,                              &
+                         (/i0,j0,numk1,time_index/),(/nitmp,njtmp,nlev,1/)) , .true. )
+        ENDIF
+        deallocate( qbuf )
       ELSE
-        ! 3d field: dims (x,y,z,time)
-        nlev = numk2-numk1+1
-        call disp_err( nf90_put_var(ncid,varid,var(1:nitmp,1:njtmp,numk1:numk2),  &
-                       (/i0,j0,numk1,time_index/),(/nitmp,njtmp,nlev,1/)) , .true. )
+        ! lossless (the default): unchanged path
+        IF( numk1.eq.numk2 )THEN
+          ! 2d field: dims (x,y,time)
+          call disp_err( nf90_put_var(ncid,varid,var(1:nitmp,1:njtmp,numk1),        &
+                         (/i0,j0,time_index/),(/nitmp,njtmp,1/)) , .true. )
+        ELSE
+          ! 3d field: dims (x,y,z,time)
+          call disp_err( nf90_put_var(ncid,varid,var(1:nitmp,1:njtmp,numk1:numk2),  &
+                         (/i0,j0,numk1,time_index/),(/nitmp,njtmp,nlev,1/)) , .true. )
+        ENDIF
       ENDIF
 #endif
 
@@ -8949,6 +8990,7 @@
 #ifdef NETCDF
       use netcdf
       use writeout_nc_module , only : disp_err
+      use quantize_module , only : bitround , nsd_to_nsb , nsd_gridded
 #endif
       implicit none
 
@@ -8963,6 +9005,7 @@
       integer :: i,j,k
 #ifdef NETCDF
       integer :: varid,status
+      integer :: nsb
 #endif
 #ifdef DP
       real*4, dimension(nxr,nyr) :: vout
@@ -8971,6 +9014,7 @@
       ! writeo for single processor:
 
 #ifdef NETCDF
+      nsb = 0
       if( output_format.eq.2 )then
         status = nf90_inq_varid(ncid,aname,varid)
         if(status.ne.nf90_noerr)then
@@ -8979,6 +9023,11 @@
           call stopcm1
         endif
         print *,'  ncid,aname,varid = ',ncid,aname,varid,var(1,1,1)
+        ! bits to keep for the optional lossy trim below; 0 = lossless.
+        ! Only netcdf output is trimmed -- the grads path above writes raw
+        ! records with no compression, so trimming there would lose precision
+        ! for no size benefit.
+        nsb = nsd_to_nsb( nsd_gridded(aname) )
       endif
 #endif
 
@@ -9011,6 +9060,7 @@
             dat2(i,j) = var(i,j,1)
           enddo
           enddo
+          call bitround( dat2 , nsb )
           status = nf90_put_var(ncid,varid,dat2,(/1,1,time_index/),(/nxr,nyr,1/))
           if(status.ne.nf90_noerr)then
             print *,'  Error2 in writeo, aname = ',aname
@@ -9025,6 +9075,7 @@
               dat2(i,j) = var(i,j,k)
             enddo
             enddo
+            call bitround( dat2 , nsb )
             status = nf90_put_var(ncid,varid,dat2,(/1,1,k,time_index/),(/nxr,nyr,1,1/))
             if(status.ne.nf90_noerr)then
               print *,'  Error3 in writeo, aname = ',aname
@@ -9153,6 +9204,7 @@
       use mpi
 #ifdef NETCDF
       use netcdf
+      use quantize_module , only : bitround , nsd_to_nsb , nsd_gridded
 #endif
       implicit none
 
@@ -9176,6 +9228,7 @@
 #endif
 #ifdef NETCDF
       integer :: varid,status
+      integer :: nsb
 #endif
 
       ! begin proc 0:
@@ -9194,6 +9247,7 @@
       enddo
 
 #ifdef NETCDF
+      nsb = 0
       if( output_format.eq.2 )then
         ! while we are waiting, get varid  (k=numk1 only)
         status = nf90_inq_varid(ncid,aname,varid)
@@ -9202,6 +9256,9 @@
           print *,nf90_strerror(status)
           call stopcm1
         endif
+        ! bits to keep for the optional lossy trim below; 0 = lossless.
+        ! netcdf output only -- the grads branch is uncompressed.
+        nsb = nsd_to_nsb( nsd_gridded(aname) )
       endif
 #endif
 
@@ -9279,6 +9336,9 @@
 #ifdef NETCDF
         ELSEIF(output_format.eq.2)THEN
           ! ----- netcdf format -----
+          ! optional lossy bit-trim of the gathered slab, before it is written
+          ! (no-op when nsb=0, i.e. output_signif_digits=0, the default)
+          call bitround( dat2(1:nxr,1:nyr) , nsb )
           if(numk1.eq.numk2)then
             status = nf90_put_var(ncid,varid,dat2,(/1,1,time_index/),(/nxr,nyr,1/))
           else

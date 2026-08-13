@@ -17,3 +17,5 @@ onefile.F
 Makefile
 # Executable
 cm1.exe
+# Unit-test build products
+tests/build/

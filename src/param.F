@@ -183,6 +183,25 @@
       if(myid.eq.0)then
 #endif
 
+!--------------------------------------------------------------
+!  Defaults for the output-compression namelist variables (&param9).
+!
+!  These MUST be initialized here, before the namelist read, because an
+!  existing namelist.input from before this feature was added will simply
+!  not contain them -- and an uninitialized integer that happens to come up
+!  nonzero would silently switch on lossy compression.  The defaults below
+!  reproduce the pre-feature behavior exactly: deflate level 1 (what the
+!  three writers used to hardcode) and 0 significant digits, which means
+!  "no bit-rounding, keep full float32 precision".
+!
+!  See docs/claude/lossy_compression_plan.md for what these do and for the
+!  measured error-vs-ratio that motivates the recommended settings.
+!--------------------------------------------------------------
+
+      output_deflate_level = 1    ! zlib level for all compressed netcdf output (1-9)
+      output_signif_digits = 0    ! gridded  cm1out_*.nc       : 0 = lossless
+      prcl_signif_digits   = 0    ! parcel   cm1out_pdata_*.nc : 0 = lossless
+
       open(unit=20,file='namelist.input',form='formatted',status='old',    &
            access='sequential',err=8000)
 
@@ -426,6 +445,13 @@
       call MPI_BCAST(output_format  ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST(output_filetype,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST(output_interp ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
+      ! compression settings: every rank needs these, not just rank 0.  The
+      ! parallel writers (output_filetype=4, writepdata_nc_par) define
+      ! variables collectively, so ranks disagreeing about the deflate level
+      ! or the bit-rounding would be a corrupt file rather than a clean error.
+      call MPI_BCAST(output_deflate_level,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
+      call MPI_BCAST(output_signif_digits,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
+      call MPI_BCAST(prcl_signif_digits  ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST(output_rain   ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST(output_sws    ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST(output_svs    ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
@@ -4632,6 +4658,16 @@
       if(terrain_flag) iterrain = 1
 
       output_interp  = max(0,min(1,output_interp))*iterrain
+
+      ! output-compression settings, clamped to their legal ranges.
+      ! deflate level: zlib accepts 1-9 (0 would mean "no compression", which
+      ! this fork's writers do not support -- they always request the filter).
+      ! significant digits: 0 = lossless; the upper clamp is 7, beyond which
+      ! bit-rounding a float32 is a no-op anyway (24 bits ~ 7.2 decimal digits).
+      output_deflate_level = max(1,min(9,output_deflate_level))
+      output_signif_digits = max(0,min(7,output_signif_digits))
+      prcl_signif_digits   = max(0,min(7,prcl_signif_digits))
+
       output_rain    = max(0,min(1,output_rain))
       output_sws     = max(0,min(1,output_sws))
       output_svs     = max(0,min(1,output_svs))
@@ -4771,6 +4807,9 @@
       if(dowr) write(outfile,*) 'output_format    =',output_format
       if(dowr) write(outfile,*) 'output_filetype  =',output_filetype
       if(dowr) write(outfile,*) 'output_interp    =',output_interp
+      if(dowr) write(outfile,*) 'output_deflate_level =',output_deflate_level
+      if(dowr) write(outfile,*) 'output_signif_digits =',output_signif_digits
+      if(dowr) write(outfile,*) 'prcl_signif_digits   =',prcl_signif_digits
       if(dowr) write(outfile,*) 'output_rain      =',output_rain
       if(dowr) write(outfile,*) 'output_sws       =',output_sws
       if(dowr) write(outfile,*) 'output_svs       =',output_svs

@@ -106,6 +106,7 @@
               cs1we,cs1sn,ct1we,ct1sn,cv1we,cu1sn,cw1we,cw1sn,cs2we,cs2sn,    &
               cs3we,cs3sn,ct3we,ct3sn,cv3we,cu3sn,cw3we,cw3sn,cs3weq,cs3snq,  &
               output_format,output_filetype,output_interp,                    &
+              output_deflate_level,output_signif_digits,prcl_signif_digits,   &
               restart_format,restart_filetype,                                &
               output_rain,output_sws,output_svs,output_sps,output_srs,        &
               output_sgs,output_sus,output_shs,output_coldpool,output_zs,     &
@@ -287,6 +288,7 @@
       namelist /param9/                                                       &
               output_format,output_filetype,                                  &
               output_interp,                                                  &
+              output_deflate_level,output_signif_digits,prcl_signif_digits,   &
               output_rain,output_sws,output_svs,output_sps,output_srs,        &
               output_sgs,output_sus,output_shs,output_coldpool,               &
               output_sfcflx,output_sfcparams,output_sfcdiags,                 &

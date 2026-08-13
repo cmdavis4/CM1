@@ -28,6 +28,7 @@
                                dumz,dumx,dumy)
       use input
       use constants
+      use quantize_module , only : nsd_gridded
 #ifdef MPI
       use mpi
 #endif
@@ -83,7 +84,8 @@
 
       integer, parameter :: shuffle       = 1
       integer, parameter :: deflate       = 1
-      integer, parameter :: deflate_level = 1
+      ! deflate level is the namelist knob output_deflate_level (default 1,
+      ! which is what this used to hardcode).
 
       integer :: chkx,chky,chkxp1,chkyp1
 
@@ -378,7 +380,8 @@
         endif
         if( cmpr_output(n) )then
 !!!          if( myid.eq.0 ) print *,'    ... compressing ... '
-          call disp_err( nf90_def_var_deflate(ncid,varid,shuffle,deflate,deflate_level) , .true. )
+          call disp_err( nf90_def_var_deflate(ncid,varid,shuffle,deflate,output_deflate_level) , .true. )
+          call quantize_att( ncid , varid , nsd_gridded(name_output(n)) )
         endif
 #endif
       enddo  varloop
@@ -1841,10 +1844,53 @@
 !ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 !ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 
+!-----------------------------------------------------------------------
+!  Record, on the variable itself, that its low mantissa bits were zeroed
+!  and how many were kept.  Lossy output is not reversible, so a file that
+!  does not say how it was quantized has unknowable precision after the
+!  fact -- these attributes are the only record.
+!
+!  The attribute name matches what netCDF >= 4.9 writes for
+!  NC_QUANTIZE_BITROUND, so tools that already understand quantized files
+!  (and a future switch to nf90_def_var_quantize) see the same thing.
+!
+!  Called from inside define mode, immediately after def_var_deflate.
+!  nsd <= 0 means this variable is lossless: write nothing at all, so that
+!  a run with the feature off produces byte-identical headers to before.
+!-----------------------------------------------------------------------
+
+      subroutine quantize_att( ncid , varid , nsd )
+      use netcdf
+      use quantize_module , only : nsd_to_nsb
+      implicit none
+
+      integer, intent(in) :: ncid , varid , nsd
+
+      integer :: nsb
+
+      if( nsd.le.0 ) return
+
+      nsb = nsd_to_nsb( nsd )
+      if( nsb.le.0 .or. nsb.ge.23 ) return   ! no bits actually discarded
+
+      call disp_err( nf90_put_att( ncid , varid ,                          &
+           '_QuantizeBitRoundNumberOfSignificantBits' , nsb ) , .true. )
+      call disp_err( nf90_put_att( ncid , varid ,                          &
+           'quantization' , 'bitround (cm1_cd, in-model)' ) , .true. )
+      call disp_err( nf90_put_att( ncid , varid ,                          &
+           'quantization_significant_digits' , nsd ) , .true. )
+
+      end subroutine quantize_att
+
+!ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+!ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+!ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+
       subroutine writepdata_nc(prec,rtime,qname,name_prcl,desc_prcl,unit_prcl,pdata,pdata2)
       use input
       use constants
       use netcdf
+      use quantize_module , only : bitround , nsd_to_nsb , nsd_parcel
       implicit none
 
       integer, intent(inout) :: prec
@@ -1860,7 +1906,7 @@
 
       integer, parameter :: shuffle       = 1
       integer, parameter :: deflate       = 1
-      integer, parameter :: deflate_level = 1
+      ! deflate level is the namelist knob output_deflate_level (default 1).
 
 !-----------------------------------------------------------------------
 
@@ -1950,7 +1996,8 @@
         ! chunk = one full parcel slab per time level: matches the all-parcels-
         ! per-time access pattern, and is the unit of (de)compression below.
         call disp_err( NF90_DEF_VAR_CHUNKING(ncid,varid,NF90_CHUNKED,(/nparcels,1/)) , .true. )
-        call disp_err( nf90_def_var_deflate(ncid,varid,shuffle,deflate,deflate_level) , .true. )
+        call disp_err( nf90_def_var_deflate(ncid,varid,shuffle,deflate,output_deflate_level) , .true. )
+        call quantize_att( ncid , varid , nsd_parcel(name_prcl(n)) )
 #endif
       enddo  prclloop
 
@@ -1985,6 +2032,10 @@
         do np=1,nparcels
           pdata2(np) = pdata(np,n)
         enddo
+        ! optional lossy bit-trim, applied to this copy (never to pdata, which
+        ! is the live parcel state).  nsb=0 when prcl_signif_digits=0, and
+        ! bitround is then a no-op, so the default path is bit-for-bit as before.
+        call bitround( pdata2 , nsd_to_nsb( nsd_parcel(name_prcl(n)) ) )
         call disp_err( nf90_put_var(ncid,varid,pdata2,(/1,time_index/),(/nparcels,1/)) , .true. )
       ENDDO
 
@@ -2010,6 +2061,7 @@
       use input
       use constants
       use netcdf
+      use quantize_module , only : bitround , nsd_to_nsb , nsd_parcel
 #ifdef MPI
       use mpi
 #endif
@@ -2031,9 +2083,14 @@
       real, intent(in), dimension(bsz,npvals) :: obuf
 
       integer :: i,ncid,status,varid,time_index,n,np,timeid,npid,yhid,zhid,tfile
+      integer :: nsb
       logical :: allinfo
-      integer, parameter :: shuffle=1, deflate=1, deflate_level=1
+      integer, parameter :: shuffle=1, deflate=1
+      ! deflate level is the namelist knob output_deflate_level (default 1).
       real, allocatable :: idbuf(:)
+      ! work buffer for bit-rounding: obuf is intent(in) (it is the caller's
+      ! gathered parcel block), so a lossy write needs its own copy.
+      real, allocatable :: qbuf(:)
 
 #ifdef MPI
       if( myid.eq.0 ) print *,'  Entering writepdata_nc_par '
@@ -2104,7 +2161,8 @@
           ! chunk = one rank's id-block per time level (aligns each rank's
           ! write to whole chunks) + deflate:
           call disp_err( NF90_DEF_VAR_CHUNKING(ncid,varid,NF90_CHUNKED,(/bsz,1/)) , .true. )
-          call disp_err( nf90_def_var_deflate(ncid,varid,shuffle,deflate,deflate_level) , .true. )
+          call disp_err( nf90_def_var_deflate(ncid,varid,shuffle,deflate,output_deflate_level) , .true. )
+          call quantize_att( ncid , varid , nsd_parcel(name_prcl(n)) )
 #endif
         enddo
 
@@ -2145,7 +2203,22 @@
       DO n=1,prcl_out
         call disp_err( nf90_inq_varid(ncid,trim(name_prcl(n)),varid) , .true. )
         call disp_err( nf90_var_par_access(ncid,varid,nf90_collective) , .true. )
-        call disp_err( nf90_put_var(ncid,varid,obuf(:,n),(/bstart+1,time_index/),(/nblk,1/)) , .true. )
+        nsb = nsd_to_nsb( nsd_parcel(name_prcl(n)) )
+        IF( nsb.gt.0 .and. nblk.gt.0 )THEN
+          ! lossy: bit-trim a copy.  obuf is intent(in) and is reused by the
+          ! caller, so it must not be modified in place.  Only the nblk values
+          ! this rank actually writes are copied.
+          allocate( qbuf(nblk) )
+          do np=1,nblk
+            qbuf(np) = obuf(np,n)
+          enddo
+          call bitround( qbuf , nsb )
+          call disp_err( nf90_put_var(ncid,varid,qbuf,(/bstart+1,time_index/),(/nblk,1/)) , .true. )
+          deallocate( qbuf )
+        ELSE
+          ! lossless (the default), or a rank with no parcels: unchanged path
+          call disp_err( nf90_put_var(ncid,varid,obuf(:,n),(/bstart+1,time_index/),(/nblk,1/)) , .true. )
+        ENDIF
       ENDDO
 
       call disp_err( nf90_close(ncid) , .true. )
