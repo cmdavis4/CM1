@@ -22,7 +22,8 @@ ROOT=/gpfs/wolf2/arm/atm124/proj-shared/cmdavis4/projects/dc_entrainment/sc/_los
 for d in regress_ft2 regress_ft4 \
          prcl_ft4_lossless prcl_ft4_lossy \
          prcl_ft2_lossless prcl_ft2_lossy \
-         uneven_ft4_lossless uneven_ft4_lossy ; do
+         uneven_ft4_lossless uneven_ft4_lossy \
+         pack_ft4 pack_ft2 pack_uneven_ft4 ; do
   echo "############### RUN $d ###############"
   cd "$ROOT/$d"
   srun -n 4 ./cm1.exe > cm1.out 2>&1

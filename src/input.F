@@ -107,6 +107,7 @@
               cs3we,cs3sn,ct3we,ct3sn,cv3we,cu3sn,cw3we,cw3sn,cs3weq,cs3snq,  &
               output_format,output_filetype,output_interp,                    &
               output_deflate_level,output_signif_digits,prcl_signif_digits,   &
+              output_pack,prcl_pack,                                          &
               restart_format,restart_filetype,                                &
               output_rain,output_sws,output_svs,output_sps,output_srs,        &
               output_sgs,output_sus,output_shs,output_coldpool,output_zs,     &
@@ -289,6 +290,7 @@
               output_format,output_filetype,                                  &
               output_interp,                                                  &
               output_deflate_level,output_signif_digits,prcl_signif_digits,   &
+              output_pack,prcl_pack,                                          &
               output_rain,output_sws,output_svs,output_sps,output_srs,        &
               output_sgs,output_sus,output_shs,output_coldpool,               &
               output_sfcflx,output_sfcparams,output_sfcdiags,                 &

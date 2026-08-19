@@ -6,6 +6,7 @@
   public :: netcdf_prelim
 #ifdef NETCDF
   public :: restart_prelim,writestat_nc,writepdata_nc,writepdata_nc_par,writehifrq_nc,writediag_nc,writeazim_nc,writecenter_nc,writemove_nc,disp_err
+  public :: put_slab_nc,put_blk_nc,put_prcl_nc
 #endif
 
   CONTAINS
@@ -28,7 +29,8 @@
                                dumz,dumx,dumy)
       use input
       use constants
-      use quantize_module , only : nsd_gridded
+      use quantize_module , only : nsd_gridded ,                          &
+                                   pack_gridded
 #ifdef MPI
       use mpi
 #endif
@@ -88,6 +90,8 @@
       ! which is what this used to hardcode).
 
       integer :: chkx,chky,chkxp1,chkyp1
+      integer :: xtype,pkind          ! fixed-point packing (output_pack)
+      real    :: pscale,poffset
 
       logical, parameter :: stop_on_error = .true.
 
@@ -328,23 +332,34 @@
 
       varloop:  &
       do n = 1,n_out
+        ! fixed-point packing (output_pack=1): the variable becomes
+        ! nf90_short/nf90_int carrying scale_factor+add_offset.  pk_none
+        ! (the default) leaves it nf90_float, exactly as before.
+        call pack_gridded( name_output(n) , pkind , pscale , poffset )
+        if(     pkind.eq.2 )then
+          xtype = nf90_short
+        elseif( pkind.eq.4 )then
+          xtype = nf90_int
+        else
+          xtype = nf90_float
+        endif
         if( myid.eq.0 ) print *,'  n,name_output = ',n,name_output(n)
 !!!        if( myid.eq.0 ) print *,'  n = ',n,trim(name_output(n))
         if(     grid_output(n).eq.'s' )then
 !ORF keep original calls for reference
 !         call disp_err( nf90_def_var(ncid,trim(name_output(n)),nf90_float,(/niid,njid,nkid,timeid/),varid) , .true. )
-          call disp_err( nf90_def_var(ncid,trim(name_output(n)),nf90_float,(/xhid,yhid,zhid,timeid/),varid) , .true. )
+          call disp_err( nf90_def_var(ncid,trim(name_output(n)),xtype,(/xhid,yhid,zhid,timeid/),varid) , .true. )
         elseif( grid_output(n).eq.'u' .and. fnum.eq.51 )then
 !         call disp_err( nf90_def_var(ncid,trim(name_output(n)),nf90_float,(/nip1id,njid,nkid,timeid/),varid) , .true. )
-          call disp_err( nf90_def_var(ncid,trim(name_output(n)),nf90_float,(/xfid,yhid,zhid,timeid/),varid) , .true. )
+          call disp_err( nf90_def_var(ncid,trim(name_output(n)),xtype,(/xfid,yhid,zhid,timeid/),varid) , .true. )
         elseif( grid_output(n).eq.'v' .and. fnum.eq.51 )then
 !         call disp_err( nf90_def_var(ncid,trim(name_output(n)),nf90_float,(/niid,njp1id,nkid,timeid/),varid) , .true. )
-          call disp_err( nf90_def_var(ncid,trim(name_output(n)),nf90_float,(/xhid,yfid,zhid,timeid/),varid) , .true. )
+          call disp_err( nf90_def_var(ncid,trim(name_output(n)),xtype,(/xhid,yfid,zhid,timeid/),varid) , .true. )
         elseif( grid_output(n).eq.'w' .and. fnum.eq.51 )then
 !         call disp_err( nf90_def_var(ncid,trim(name_output(n)),nf90_float,(/niid,njid,nkp1id,timeid/),varid) , .true. )
-          call disp_err( nf90_def_var(ncid,trim(name_output(n)),nf90_float,(/xhid,yhid,zfid,timeid/),varid) , .true. )
+          call disp_err( nf90_def_var(ncid,trim(name_output(n)),xtype,(/xhid,yhid,zfid,timeid/),varid) , .true. )
         elseif( grid_output(n).eq.'2' )then
-          call disp_err( nf90_def_var(ncid,trim(name_output(n)),nf90_float,(/xhid,yhid,timeid/),varid) , .true. )
+          call disp_err( nf90_def_var(ncid,trim(name_output(n)),xtype,(/xhid,yhid,timeid/),varid) , .true. )
         else
           IF( fnum.eq.71 .and. ( grid_output(n).eq.'u' .or. grid_output(n).eq.'v' .or. grid_output(n).eq.'w' ) )THEN
             ! no error for u,v,w with fnum=71
@@ -382,6 +397,7 @@
 !!!          if( myid.eq.0 ) print *,'    ... compressing ... '
           call disp_err( nf90_def_var_deflate(ncid,varid,shuffle,deflate,output_deflate_level) , .true. )
           call quantize_att( ncid , varid , nsd_gridded(name_output(n)) )
+          call pack_att( ncid , varid , pkind , pscale , poffset )
         endif
 #endif
       enddo  varloop
@@ -1882,6 +1898,169 @@
 
       end subroutine quantize_att
 
+!-----------------------------------------------------------------------
+!  Write the CF packing attributes for a fixed-point variable.
+!
+!  unpacked = packed*scale_factor + add_offset.  netCDF itself does not
+!  apply this on either read or write -- it is a client convention -- but
+!  xarray and netCDF4-python both honour it, so a packed file needs no
+!  special handling downstream.
+!
+!  Called from inside define mode.  pk = pk_none writes nothing at all, so
+!  a run with output_pack/prcl_pack off produces byte-identical headers.
+!
+!  scale_factor and add_offset are written as float (the variable's own
+!  unpacked type) -- CF requires them to match, and a double here would make
+!  readers promote everything to float64.
+!-----------------------------------------------------------------------
+
+      subroutine pack_att( ncid , varid , pk , scale , offset )
+      use netcdf
+      use quantize_module , only : pk_none
+      implicit none
+
+      integer, intent(in) :: ncid , varid , pk
+      real, intent(in) :: scale , offset
+
+      if( pk.eq.pk_none ) return
+
+      call disp_err( nf90_put_att( ncid , varid , 'scale_factor' , scale  ) , .true. )
+      call disp_err( nf90_put_att( ncid , varid , 'add_offset'   , offset ) , .true. )
+      call disp_err( nf90_put_att( ncid , varid ,                          &
+           'packing' , 'fixed-point (cm1_cd, in-model)' ) , .true. )
+
+      end subroutine pack_att
+
+!-----------------------------------------------------------------------
+!  Write one gridded slab / block to netcdf, as float or fixed-point.
+!
+!  These exist so the four gridded write paths (writeo filetype 3 and 4,
+!  writeosp, writeocomm3) share one implementation of the packing branch
+!  instead of four copies of it.
+!
+!  dat is intent(inout) because the lossless path bit-trims in place; every
+!  caller passes a scratch buffer, never live model state.
+!
+!  start/cnt are assumed-shape so the same routine serves the 2d (x,y,time)
+!  and 3d (x,y,z,time) variable layouts.
+!-----------------------------------------------------------------------
+
+      subroutine put_slab_nc( ncid,varid,aname,dat,ldi,ldj,nx_,ny_,start,cnt,nsb,pk,sc,off )
+      use netcdf
+      use quantize_module , only : bitround , pack_check , pack_i2 , pack_i4 ,   &
+                                   pk_none , pk_i2
+      implicit none
+
+      integer, intent(in) :: ncid,varid,ldi,ldj,nx_,ny_,nsb,pk
+      character(len=*), intent(in) :: aname
+      real, intent(inout), dimension(ldi,ldj) :: dat
+      integer, intent(in), dimension(:) :: start,cnt
+      real, intent(in) :: sc,off
+
+      integer(kind=2), allocatable, dimension(:,:) :: i2buf
+      integer(kind=4), allocatable, dimension(:,:) :: i4buf
+
+        IF( pk.eq.pk_none )THEN
+          ! unchanged path: optional bit-trim (no-op when nsb=0), write float
+          call bitround( dat(1:nx_,1:ny_) , nsb )
+          call disp_err( nf90_put_var(ncid,varid,dat,start,cnt) , .true. )
+        ELSEIF( pk.eq.pk_i2 )THEN
+          call pack_check( aname , minval(dat(1:nx_,1:ny_)) ,                     &
+                                   maxval(dat(1:nx_,1:ny_)) , pk , sc , off )
+          allocate( i2buf(nx_,ny_) )
+          i2buf = pack_i2( dat(1:nx_,1:ny_) , sc , off )
+          call disp_err( nf90_put_var(ncid,varid,i2buf,start,cnt) , .true. )
+          deallocate( i2buf )
+        ELSE
+          call pack_check( aname , minval(dat(1:nx_,1:ny_)) ,                     &
+                                   maxval(dat(1:nx_,1:ny_)) , pk , sc , off )
+          allocate( i4buf(nx_,ny_) )
+          i4buf = pack_i4( dat(1:nx_,1:ny_) , sc , off )
+          call disp_err( nf90_put_var(ncid,varid,i4buf,start,cnt) , .true. )
+          deallocate( i4buf )
+        ENDIF
+
+      end subroutine put_slab_nc
+
+!-----------------------------------------------------------------------
+
+      subroutine put_blk_nc( ncid,varid,aname,dat,n1,n2,n3,start,cnt,nsb,pk,sc,off )
+      use netcdf
+      use quantize_module , only : bitround , pack_check , pack_i2 , pack_i4 ,   &
+                                   pk_none , pk_i2
+      implicit none
+
+      integer, intent(in) :: ncid,varid,n1,n2,n3,nsb,pk
+      character(len=*), intent(in) :: aname
+      real, intent(inout), dimension(n1,n2,n3) :: dat
+      integer, intent(in), dimension(:) :: start,cnt
+      real, intent(in) :: sc,off
+
+      integer(kind=2), allocatable, dimension(:,:,:) :: i2buf
+      integer(kind=4), allocatable, dimension(:,:,:) :: i4buf
+
+        IF( pk.eq.pk_none )THEN
+          call bitround( dat , nsb )
+          call disp_err( nf90_put_var(ncid,varid,dat,start,cnt) , .true. )
+        ELSEIF( pk.eq.pk_i2 )THEN
+          call pack_check( aname , minval(dat) , maxval(dat) , pk , sc , off )
+          allocate( i2buf(n1,n2,n3) )
+          i2buf = pack_i2( dat , sc , off )
+          call disp_err( nf90_put_var(ncid,varid,i2buf,start,cnt) , .true. )
+          deallocate( i2buf )
+        ELSE
+          call pack_check( aname , minval(dat) , maxval(dat) , pk , sc , off )
+          allocate( i4buf(n1,n2,n3) )
+          i4buf = pack_i4( dat , sc , off )
+          call disp_err( nf90_put_var(ncid,varid,i4buf,start,cnt) , .true. )
+          deallocate( i4buf )
+        ENDIF
+
+      end subroutine put_blk_nc
+
+!-----------------------------------------------------------------------
+!  Write one parcel variable's block to netcdf, as float or fixed-point.
+!
+!  n = 0 is legal and must still issue the put_var: the parallel writer is
+!  collective, so a rank that owns no parcels has to call along with
+!  everyone else.  The range check is skipped in that case -- minval of a
+!  zero-size array is +huge, which would report a bogus clamp.
+!-----------------------------------------------------------------------
+
+      subroutine put_prcl_nc( ncid,varid,aname,dat,n,start,cnt,nsb,pk,sc,off )
+      use netcdf
+      use quantize_module , only : bitround , pack_check , pack_i2 , pack_i4 ,   &
+                                   pk_none , pk_i2
+      implicit none
+
+      integer, intent(in) :: ncid,varid,n,nsb,pk
+      character(len=*), intent(in) :: aname
+      real, intent(inout), dimension(n) :: dat
+      integer, intent(in), dimension(:) :: start,cnt
+      real, intent(in) :: sc,off
+
+      integer(kind=2), allocatable, dimension(:) :: i2buf
+      integer(kind=4), allocatable, dimension(:) :: i4buf
+
+        IF( pk.eq.pk_none )THEN
+          if( n.gt.0 ) call bitround( dat , nsb )
+          call disp_err( nf90_put_var(ncid,varid,dat,start,cnt) , .true. )
+        ELSEIF( pk.eq.pk_i2 )THEN
+          if( n.gt.0 ) call pack_check( aname , minval(dat) , maxval(dat) , pk , sc , off )
+          allocate( i2buf(max(n,1)) )
+          if( n.gt.0 ) i2buf(1:n) = pack_i2( dat , sc , off )
+          call disp_err( nf90_put_var(ncid,varid,i2buf,start,cnt) , .true. )
+          deallocate( i2buf )
+        ELSE
+          if( n.gt.0 ) call pack_check( aname , minval(dat) , maxval(dat) , pk , sc , off )
+          allocate( i4buf(max(n,1)) )
+          if( n.gt.0 ) i4buf(1:n) = pack_i4( dat , sc , off )
+          call disp_err( nf90_put_var(ncid,varid,i4buf,start,cnt) , .true. )
+          deallocate( i4buf )
+        ENDIF
+
+      end subroutine put_prcl_nc
+
 !ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 !ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 !ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
@@ -1890,7 +2069,8 @@
       use input
       use constants
       use netcdf
-      use quantize_module , only : bitround , nsd_to_nsb , nsd_parcel
+      use quantize_module , only : nsd_to_nsb , nsd_parcel ,                &
+                                   pack_parcel , pk_none
       implicit none
 
       integer, intent(inout) :: prec
@@ -1907,6 +2087,10 @@
       integer, parameter :: shuffle       = 1
       integer, parameter :: deflate       = 1
       ! deflate level is the namelist knob output_deflate_level (default 1).
+
+      integer :: xtype,pkind          ! fixed-point packing (prcl_pack)
+      real    :: pscale,poffset
+      real, allocatable, dimension(:) :: idbuf
 
 !-----------------------------------------------------------------------
 
@@ -1967,6 +2151,14 @@
     call disp_err( nf90_def_var(ncid,"xh",nf90_float,(/npid/),varid) , .true. )
     call disp_err( nf90_put_att(ncid,varid,"long_name","west-east location ... actually, really parcel ID number") , .true. )
     call disp_err( nf90_put_att(ncid,varid,"units","degree_east") , .true. )
+#ifdef NCFPLUS
+    ! This is just the ramp 1..nparcels, but it is written into EVERY per-time
+    ! file, so at 1e8 parcels it was 581 MB of every 8.6 GB file (6.8% of the
+    ! whole parcel stream) stored contiguous and uncompressed.  Chunked +
+    ! deflated it is under 5 MB.
+    call disp_err( NF90_DEF_VAR_CHUNKING(ncid,varid,NF90_CHUNKED,(/nparcels/)) , .true. )
+    call disp_err( nf90_def_var_deflate(ncid,varid,shuffle,deflate,output_deflate_level) , .true. )
+#endif
 
     call disp_err( nf90_def_var(ncid,"yh",nf90_float,(/yhid/),varid) , .true. )
     call disp_err( nf90_put_att(ncid,varid,"long_name","south-north location") , .true. )
@@ -1989,7 +2181,15 @@
       prclloop:  &
       do n = 1,prcl_out
         if(myid.eq.0) print *,n,trim(name_prcl(n))
-        call disp_err( nf90_def_var(ncid,trim(name_prcl(n)),nf90_float,(/npid,timeid/),varid) , .true. )
+        call pack_parcel( name_prcl(n) , pkind , pscale , poffset )
+        if(     pkind.eq.2 )then
+          xtype = nf90_short
+        elseif( pkind.eq.4 )then
+          xtype = nf90_int
+        else
+          xtype = nf90_float
+        endif
+        call disp_err( nf90_def_var(ncid,trim(name_prcl(n)),xtype,(/npid,timeid/),varid) , .true. )
         call disp_err( nf90_put_att(ncid,varid,"long_name",trim(desc_prcl(n))) , .true. )
         call disp_err( nf90_put_att(ncid,varid,"units",trim(unit_prcl(n))) , .true. )
 #ifdef NCFPLUS
@@ -1998,6 +2198,7 @@
         call disp_err( NF90_DEF_VAR_CHUNKING(ncid,varid,NF90_CHUNKED,(/nparcels,1/)) , .true. )
         call disp_err( nf90_def_var_deflate(ncid,varid,shuffle,deflate,output_deflate_level) , .true. )
         call quantize_att( ncid , varid , nsd_parcel(name_prcl(n)) )
+        call pack_att( ncid , varid , pkind , pscale , poffset )
 #endif
       enddo  prclloop
 
@@ -2010,9 +2211,14 @@
 
     call disp_err( nf90_enddef(ncid) , .true. )
 
+  ! one buffered write, not nparcels single-element put_var calls (which at
+  ! 1e8 parcels was 1e8 netcdf library round-trips per output file).
+  allocate( idbuf(nparcels) )
   do np=1,nparcels
-    call disp_err( nf90_put_var(ncid,npid,float(np),(/np/)) , .true. )
+    idbuf(np) = float(np)
   enddo
+  call disp_err( nf90_put_var(ncid,npid,idbuf,(/1/),(/nparcels/)) , .true. )
+  deallocate( idbuf )
     call disp_err( nf90_put_var(ncid,yhid,0.0) , .true. )
     call disp_err( nf90_put_var(ncid,zhid,0.0) , .true. )
 
@@ -2032,11 +2238,14 @@
         do np=1,nparcels
           pdata2(np) = pdata(np,n)
         enddo
-        ! optional lossy bit-trim, applied to this copy (never to pdata, which
-        ! is the live parcel state).  nsb=0 when prcl_signif_digits=0, and
-        ! bitround is then a no-op, so the default path is bit-for-bit as before.
-        call bitround( pdata2 , nsd_to_nsb( nsd_parcel(name_prcl(n)) ) )
-        call disp_err( nf90_put_var(ncid,varid,pdata2,(/1,time_index/),(/nparcels,1/)) , .true. )
+        ! pdata2 is a copy (never pdata, which is live parcel state), so
+        ! put_prcl_nc may bit-trim or fixed-point pack it in place.  Both are
+        ! no-ops by default, leaving the path bit-for-bit as before.
+        call pack_parcel( name_prcl(n) , pkind , pscale , poffset )
+        call put_prcl_nc( ncid,varid,name_prcl(n),pdata2,nparcels,               &
+                          (/1,time_index/),(/nparcels,1/),                       &
+                          nsd_to_nsb(nsd_parcel(name_prcl(n))),                  &
+                          pkind,pscale,poffset )
       ENDDO
 
       ! close file
@@ -2061,7 +2270,8 @@
       use input
       use constants
       use netcdf
-      use quantize_module , only : bitround , nsd_to_nsb , nsd_parcel
+      use quantize_module , only : nsd_to_nsb , nsd_parcel ,                &
+                                   pack_parcel , pk_none
 #ifdef MPI
       use mpi
 #endif
@@ -2084,6 +2294,8 @@
 
       integer :: i,ncid,status,varid,time_index,n,np,timeid,npid,yhid,zhid,tfile
       integer :: nsb
+      integer :: xtype,pkind          ! fixed-point packing (prcl_pack)
+      real    :: pscale,poffset
       logical :: allinfo
       integer, parameter :: shuffle=1, deflate=1
       ! deflate level is the namelist knob output_deflate_level (default 1).
@@ -2142,6 +2354,13 @@
         call disp_err( nf90_def_var(ncid,"xh",nf90_float,(/npid/),varid) , .true. )
         call disp_err( nf90_put_att(ncid,varid,"long_name","west-east location ... actually, really parcel ID number") , .true. )
         call disp_err( nf90_put_att(ncid,varid,"units","degree_east") , .true. )
+#ifdef NCFPLUS
+        ! just the ramp 1..nparcels, but written into every per-time file: at
+        ! 1e8 parcels that was 581 MB of every 8.6 GB file, stored contiguous
+        ! and uncompressed.  Chunked per rank-block + deflated it is < 5 MB.
+        call disp_err( NF90_DEF_VAR_CHUNKING(ncid,varid,NF90_CHUNKED,(/bsz/)) , .true. )
+        call disp_err( nf90_def_var_deflate(ncid,varid,shuffle,deflate,output_deflate_level) , .true. )
+#endif
         call disp_err( nf90_def_var(ncid,"yh",nf90_float,(/yhid/),varid) , .true. )
         call disp_err( nf90_put_att(ncid,varid,"long_name","south-north location") , .true. )
         call disp_err( nf90_put_att(ncid,varid,"units","degree_north") , .true. )
@@ -2154,7 +2373,15 @@
         call disp_err( nf90_put_att(ncid,varid,"axis","T") , .true. )
 
         do n=1,prcl_out
-          call disp_err( nf90_def_var(ncid,trim(name_prcl(n)),nf90_float,(/npid,timeid/),varid) , .true. )
+          call pack_parcel( name_prcl(n) , pkind , pscale , poffset )
+          if(     pkind.eq.2 )then
+            xtype = nf90_short
+          elseif( pkind.eq.4 )then
+            xtype = nf90_int
+          else
+            xtype = nf90_float
+          endif
+          call disp_err( nf90_def_var(ncid,trim(name_prcl(n)),xtype,(/npid,timeid/),varid) , .true. )
           call disp_err( nf90_put_att(ncid,varid,"long_name",trim(desc_prcl(n))) , .true. )
           call disp_err( nf90_put_att(ncid,varid,"units",trim(unit_prcl(n))) , .true. )
 #ifdef NCFPLUS
@@ -2163,6 +2390,7 @@
           call disp_err( NF90_DEF_VAR_CHUNKING(ncid,varid,NF90_CHUNKED,(/bsz,1/)) , .true. )
           call disp_err( nf90_def_var_deflate(ncid,varid,shuffle,deflate,output_deflate_level) , .true. )
           call quantize_att( ncid , varid , nsd_parcel(name_prcl(n)) )
+          call pack_att( ncid , varid , pkind , pscale , poffset )
 #endif
         enddo
 
@@ -2173,14 +2401,16 @@
 
         ! parcel-id coordinate: each rank writes its block (independent, disjoint):
         call disp_err( nf90_inq_varid(ncid,"xh",npid) , .true. )
-        if( nblk.gt.0 )then
-          allocate( idbuf(nblk) )
-          do np=1,nblk
-            idbuf(np) = float(bstart+np)
-          enddo
-          call disp_err( nf90_put_var(ncid,npid,idbuf,(/bstart+1/),(/nblk/)) , .true. )
-          deallocate( idbuf )
-        endif
+        ! xh is compressed now, so this write has to be COLLECTIVE: every rank
+        ! calls, and a rank owning no parcels contributes a zero-length
+        ! hyperslab (same contract as the parcel variables below).
+        call disp_err( nf90_var_par_access(ncid,npid,nf90_collective) , .true. )
+        allocate( idbuf(max(nblk,1)) )
+        do np=1,nblk
+          idbuf(np) = float(bstart+np)
+        enddo
+        call disp_err( nf90_put_var(ncid,npid,idbuf,(/bstart+1/),(/nblk/)) , .true. )
+        deallocate( idbuf )
         if( myid.eq.0 )then
           call disp_err( nf90_inq_varid(ncid,"yh",yhid) , .true. )
           call disp_err( nf90_put_var(ncid,yhid,0.0) , .true. )
@@ -2204,16 +2434,27 @@
         call disp_err( nf90_inq_varid(ncid,trim(name_prcl(n)),varid) , .true. )
         call disp_err( nf90_var_par_access(ncid,varid,nf90_collective) , .true. )
         nsb = nsd_to_nsb( nsd_parcel(name_prcl(n)) )
-        IF( nsb.gt.0 .and. nblk.gt.0 )THEN
-          ! lossy: bit-trim a copy.  obuf is intent(in) and is reused by the
+        call pack_parcel( name_prcl(n) , pkind , pscale , poffset )
+        IF( ( nsb.gt.0 .or. pkind.ne.pk_none ) .and. nblk.gt.0 )THEN
+          ! lossy: work on a copy.  obuf is intent(in) and is reused by the
           ! caller, so it must not be modified in place.  Only the nblk values
           ! this rank actually writes are copied.
           allocate( qbuf(nblk) )
           do np=1,nblk
             qbuf(np) = obuf(np,n)
           enddo
-          call bitround( qbuf , nsb )
-          call disp_err( nf90_put_var(ncid,varid,qbuf,(/bstart+1,time_index/),(/nblk,1/)) , .true. )
+          call put_prcl_nc( ncid,varid,name_prcl(n),qbuf,nblk,                       &
+                            (/bstart+1,time_index/),(/nblk,1/),                      &
+                            nsb,pkind,pscale,poffset )
+          deallocate( qbuf )
+        ELSEIF( pkind.ne.pk_none )THEN
+          ! packed, but this rank owns no parcels: it must still take part in
+          ! the collective write, with the right (integer) type and zero count.
+          allocate( qbuf(1) )
+          qbuf = 0.0
+          call put_prcl_nc( ncid,varid,name_prcl(n),qbuf,0,                          &
+                            (/bstart+1,time_index/),(/nblk,1/),                      &
+                            nsb,pkind,pscale,poffset )
           deallocate( qbuf )
         ELSE
           ! lossless (the default), or a rank with no parcels: unchanged path

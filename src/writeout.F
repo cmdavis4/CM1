@@ -8772,7 +8772,9 @@
 #ifdef NETCDF
     use netcdf
     use writeout_nc_module , only : disp_err
-    use quantize_module , only : bitround , nsd_to_nsb , nsd_gridded
+    use writeout_nc_module , only : put_slab_nc , put_blk_nc
+    use quantize_module , only : nsd_to_nsb , nsd_gridded ,                    &
+                                 pack_gridded , pk_none
 #endif
     implicit none
 
@@ -8798,6 +8800,8 @@
 
     integer :: i,j,k
     integer :: i0,j0,nlev,nitmp,njtmp
+    integer :: pkind                ! fixed-point packing (output_pack)
+    real    :: pscale,poffset
 #ifdef NETCDF
     integer :: varid,status
     integer :: nsb
@@ -8863,6 +8867,7 @@
       endif
       print *,'  ncid,aname,varid = ',ncid,aname,varid,var(1,1,1)
       nsb = nsd_to_nsb( nsd_gridded(aname) )
+      call pack_gridded( aname , pkind , pscale , poffset )
       DO k=numk1,numk2
         !$omp parallel do default(shared)   &
         !$omp private(i,j)
@@ -8871,25 +8876,16 @@
           dat1(i,j)=var(i,j,k)
         enddo
         enddo
-        ! optional lossy bit-trim on the copy (no-op when nsb=0, i.e. when
-        ! output_signif_digits=0, which is the default)
-        call bitround( dat1(1:numi,1:numj) , nsb )
+        ! dat1 is scratch, so put_slab_nc may bit-trim (nsb>0) or fixed-point
+        ! pack (pkind/=pk_none) it in place.  Both are no-ops by default.
         if(numk1.eq.numk2)then
-          status = nf90_put_var(ncid,varid,dat1,(/1,1,time_index/),(/numi,numj,1/))
-          if(status.ne.nf90_noerr)then
-            print *,'  Error2c in writeo, aname = ',aname
-            print *,'  ncid,varid,time_index = ',ncid,varid,time_index
-            print *,nf90_strerror(status)
-            call stopcm1
-          endif
+          call put_slab_nc( ncid,varid,aname,dat1,d3i,d3j,numi,numj,             &
+                            (/1,1,time_index/),(/numi,numj,1/),                  &
+                            nsb,pkind,pscale,poffset )
         else
-          status = nf90_put_var(ncid,varid,dat1,(/1,1,k,time_index/),(/numi,numj,1,1/))
-          if(status.ne.nf90_noerr)then
-            print *,'  Error3c in writeo, aname = ',aname
-            print *,'  ncid,varid,time_index = ',ncid,varid,time_index
-            print *,nf90_strerror(status)
-            call stopcm1
-          endif
+          call put_slab_nc( ncid,varid,aname,dat1,d3i,d3j,numi,numj,             &
+                            (/1,1,k,time_index/),(/numi,numj,1,1/),              &
+                            nsb,pkind,pscale,poffset )
         endif
       ENDDO
 #endif
@@ -8928,9 +8924,10 @@
 
       nlev = numk2-numk1+1
       nsb  = nsd_to_nsb( nsd_gridded(aname) )
+      call pack_gridded( aname , pkind , pscale , poffset )
 
-      IF( nsb.gt.0 )THEN
-        ! lossy: bit-trim a copy of this rank's tile.  var is intent(in) live
+      IF( nsb.gt.0 .or. pkind.ne.pk_none )THEN
+        ! lossy: work on a copy of this rank's tile.  var is intent(in) live
         ! model state, so it must not be modified.  The array-section argument
         ! used on the lossless path below already materializes a temporary of
         ! this same shape, so this costs no extra peak memory in practice.
@@ -8944,15 +8941,16 @@
         enddo
         enddo
         enddo
-        call bitround( qbuf , nsb )
         IF( numk1.eq.numk2 )THEN
           ! 2d field: dims (x,y,time)
-          call disp_err( nf90_put_var(ncid,varid,qbuf(:,:,1),                       &
-                         (/i0,j0,time_index/),(/nitmp,njtmp,1/)) , .true. )
+          call put_blk_nc( ncid,varid,aname,qbuf,nitmp,njtmp,nlev,                  &
+                           (/i0,j0,time_index/),(/nitmp,njtmp,1/),                  &
+                           nsb,pkind,pscale,poffset )
         ELSE
           ! 3d field: dims (x,y,z,time)
-          call disp_err( nf90_put_var(ncid,varid,qbuf,                              &
-                         (/i0,j0,numk1,time_index/),(/nitmp,njtmp,nlev,1/)) , .true. )
+          call put_blk_nc( ncid,varid,aname,qbuf,nitmp,njtmp,nlev,                  &
+                           (/i0,j0,numk1,time_index/),(/nitmp,njtmp,nlev,1/),       &
+                           nsb,pkind,pscale,poffset )
         ENDIF
         deallocate( qbuf )
       ELSE
@@ -8990,7 +8988,9 @@
 #ifdef NETCDF
       use netcdf
       use writeout_nc_module , only : disp_err
-      use quantize_module , only : bitround , nsd_to_nsb , nsd_gridded
+      use writeout_nc_module , only : disp_err , put_slab_nc
+      use quantize_module , only : nsd_to_nsb , nsd_gridded ,                  &
+                                   pack_gridded , pk_none
 #endif
       implicit none
 
@@ -9006,6 +9006,8 @@
 #ifdef NETCDF
       integer :: varid,status
       integer :: nsb
+      integer :: pkind
+      real    :: pscale,poffset
 #endif
 #ifdef DP
       real*4, dimension(nxr,nyr) :: vout
@@ -9054,20 +9056,16 @@
       ELSEIF(output_format.eq.2)THEN
 
         ! ----- netcdf format -----
+        call pack_gridded( aname , pkind , pscale , poffset )
         if(numk1.eq.numk2)then
           do j=1,nyr
           do i=1,nxr
             dat2(i,j) = var(i,j,1)
           enddo
           enddo
-          call bitround( dat2 , nsb )
-          status = nf90_put_var(ncid,varid,dat2,(/1,1,time_index/),(/nxr,nyr,1/))
-          if(status.ne.nf90_noerr)then
-            print *,'  Error2 in writeo, aname = ',aname
-            print *,'  ncid,varid,time_index = ',ncid,varid,time_index
-            print *,nf90_strerror(status)
-            call stopcm1
-          endif
+          call put_slab_nc( ncid,varid,aname,dat2,nxr,nyr,nxr,nyr,               &
+                            (/1,1,time_index/),(/nxr,nyr,1/),                    &
+                            nsb,pkind,pscale,poffset )
         else
           DO k=numk1,numk2
             do j=1,nyr
@@ -9075,14 +9073,9 @@
               dat2(i,j) = var(i,j,k)
             enddo
             enddo
-            call bitround( dat2 , nsb )
-            status = nf90_put_var(ncid,varid,dat2,(/1,1,k,time_index/),(/nxr,nyr,1,1/))
-            if(status.ne.nf90_noerr)then
-              print *,'  Error3 in writeo, aname = ',aname
-              print *,'  ncid,varid,time_index = ',ncid,varid,time_index
-              print *,nf90_strerror(status)
-              call stopcm1
-            endif
+            call put_slab_nc( ncid,varid,aname,dat2,nxr,nyr,nxr,nyr,             &
+                              (/1,1,k,time_index/),(/nxr,nyr,1,1/),              &
+                              nsb,pkind,pscale,poffset )
           ENDDO
         endif
 #endif
@@ -9204,7 +9197,9 @@
       use mpi
 #ifdef NETCDF
       use netcdf
-      use quantize_module , only : bitround , nsd_to_nsb , nsd_gridded
+      use writeout_nc_module , only : disp_err , put_slab_nc
+      use quantize_module , only : nsd_to_nsb , nsd_gridded ,                  &
+                                   pack_gridded , pk_none
 #endif
       implicit none
 
@@ -9229,6 +9224,8 @@
 #ifdef NETCDF
       integer :: varid,status
       integer :: nsb
+      integer :: pkind
+      real    :: pscale,poffset
 #endif
 
       ! begin proc 0:
@@ -9248,6 +9245,7 @@
 
 #ifdef NETCDF
       nsb = 0
+      pkind = pk_none
       if( output_format.eq.2 )then
         ! while we are waiting, get varid  (k=numk1 only)
         status = nf90_inq_varid(ncid,aname,varid)
@@ -9259,6 +9257,7 @@
         ! bits to keep for the optional lossy trim below; 0 = lossless.
         ! netcdf output only -- the grads branch is uncompressed.
         nsb = nsd_to_nsb( nsd_gridded(aname) )
+        call pack_gridded( aname , pkind , pscale , poffset )
       endif
 #endif
 
@@ -9336,19 +9335,16 @@
 #ifdef NETCDF
         ELSEIF(output_format.eq.2)THEN
           ! ----- netcdf format -----
-          ! optional lossy bit-trim of the gathered slab, before it is written
-          ! (no-op when nsb=0, i.e. output_signif_digits=0, the default)
-          call bitround( dat2(1:nxr,1:nyr) , nsb )
+          ! dat2 is the gathered slab (scratch), so put_slab_nc may bit-trim
+          ! or fixed-point pack it in place.  Both are no-ops by default.
           if(numk1.eq.numk2)then
-            status = nf90_put_var(ncid,varid,dat2,(/1,1,time_index/),(/nxr,nyr,1/))
+            call put_slab_nc( ncid,varid,aname,dat2,d2i,d2j,nxr,nyr,             &
+                              (/1,1,time_index/),(/nxr,nyr,1/),                  &
+                              nsb,pkind,pscale,poffset )
           else
-            status = nf90_put_var(ncid,varid,dat2,(/1,1,k,time_index/),(/nxr,nyr,1,1/))
-          endif
-          if(status.ne.nf90_noerr)then
-            print *,'  Error2 in writeo, aname = ',aname
-            print *,'  ncid,varid,time_index = ',ncid,varid,time_index
-            print *,nf90_strerror(status)
-            call stopcm1
+            call put_slab_nc( ncid,varid,aname,dat2,d2i,d2j,nxr,nyr,             &
+                              (/1,1,k,time_index/),(/nxr,nyr,1,1/),              &
+                              nsb,pkind,pscale,poffset )
           endif
 #endif
         ENDIF

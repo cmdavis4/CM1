@@ -201,6 +201,8 @@
       output_deflate_level = 1    ! zlib level for all compressed netcdf output (1-9)
       output_signif_digits = 0    ! gridded  cm1out_*.nc       : 0 = lossless
       prcl_signif_digits   = 0    ! parcel   cm1out_pdata_*.nc : 0 = lossless
+      output_pack          = 0    ! gridded fixed-point packing: 0 = off (float)
+      prcl_pack            = 0    ! parcel  fixed-point packing: 0 = off (float)
 
       open(unit=20,file='namelist.input',form='formatted',status='old',    &
            access='sequential',err=8000)
@@ -452,6 +454,8 @@
       call MPI_BCAST(output_deflate_level,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST(output_signif_digits,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST(prcl_signif_digits  ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
+      call MPI_BCAST(output_pack         ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
+      call MPI_BCAST(prcl_pack           ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST(output_rain   ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST(output_sws    ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST(output_svs    ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
@@ -4667,6 +4671,8 @@
       output_deflate_level = max(1,min(9,output_deflate_level))
       output_signif_digits = max(0,min(7,output_signif_digits))
       prcl_signif_digits   = max(0,min(7,prcl_signif_digits))
+      output_pack          = max(0,min(1,output_pack))
+      prcl_pack            = max(0,min(1,prcl_pack))
 
       output_rain    = max(0,min(1,output_rain))
       output_sws     = max(0,min(1,output_sws))
@@ -4810,6 +4816,8 @@
       if(dowr) write(outfile,*) 'output_deflate_level =',output_deflate_level
       if(dowr) write(outfile,*) 'output_signif_digits =',output_signif_digits
       if(dowr) write(outfile,*) 'prcl_signif_digits   =',prcl_signif_digits
+      if(dowr) write(outfile,*) 'output_pack          =',output_pack
+      if(dowr) write(outfile,*) 'prcl_pack            =',prcl_pack
       if(dowr) write(outfile,*) 'output_rain      =',output_rain
       if(dowr) write(outfile,*) 'output_sws       =',output_sws
       if(dowr) write(outfile,*) 'output_svs       =',output_svs

@@ -11,8 +11,11 @@
 !-----------------------------------------------------------------------
 
   use, intrinsic :: iso_fortran_env , only : int32 , real32
-  use input , only : output_signif_digits , prcl_signif_digits
+  use input , only : output_signif_digits , prcl_signif_digits ,          &
+                     output_pack , prcl_pack
   use quantize_module , only : bitround , nsd_to_nsb , nsd_gridded , nsd_parcel
+  use quantize_module , only : pack_gridded , pack_parcel , pack_i2 , pack_i4 , &
+                               pack_range_ok , pk_none , pk_i2 , pk_i4
 
   implicit none
 
@@ -21,6 +24,12 @@
   real(real32) :: x , y , z
   real(real32), dimension(5) :: a , b
   integer(int32) :: i
+  integer :: pk
+  real :: sc , off
+  integer(kind=2) :: q2
+  integer(kind=4) :: q4
+  real(real32), dimension(3) :: fv
+  integer(kind=2), dimension(3) :: qv2
 
   nfail = 0
 
@@ -192,6 +201,88 @@
   call checki( 'gridded th clamped to max_nsd=7' , nsd_gridded('th') , 7 )
 
 !-----------------------------------------------------------------------
+!  FIXED-POINT PACKING
+!-----------------------------------------------------------------------
+
+  print *,' '
+  print *,'  --- fixed-point packing ---'
+
+  ! off by default: every variable must come back pk_none
+  output_pack = 0
+  prcl_pack   = 0
+  call pack_gridded( 'w' , pk , sc , off )
+  call checki( 'pack off: gridded w is pk_none' , pk , pk_none )
+  call pack_parcel( 'x' , pk , sc , off )
+  call checki( 'pack off: parcel  x is pk_none' , pk , pk_none )
+
+  output_pack = 1
+  prcl_pack   = 1
+
+  ! the table
+  call pack_gridded( 'w' , pk , sc , off )
+  call checki( 'gridded w  -> int16'   , pk , pk_i2 )
+  call checkl( 'gridded w  step 0.01'  , abs(sc-0.01).lt.1.0e-9 )
+  call pack_gridded( 'th' , pk , sc , off )
+  call checki( 'gridded th -> int16'   , pk , pk_i2 )
+  call checkl( 'gridded th offset 400' , abs(off-400.0).lt.1.0e-4 )
+  call pack_gridded( 'prs' , pk , sc , off )
+  call checki( 'gridded prs -> int32'  , pk , pk_i4 )
+  call pack_gridded( 'th0' , pk , sc , off )
+  call checki( 'gridded th0 stays lossless' , pk , pk_none )
+  call pack_gridded( 'rain' , pk , sc , off )
+  call checki( 'gridded rain untabled -> lossless' , pk , pk_none )
+
+  call pack_parcel( 'x' , pk , sc , off )
+  call checki( 'parcel x -> int32'     , pk , pk_i4 )
+  call checkl( 'parcel x step 0.25'    , abs(sc-0.25).lt.1.0e-9 )
+  call pack_parcel( 'zvort' , pk , sc , off )
+  call checki( 'parcel zvort -> int16' , pk , pk_i2 )
+  call pack_parcel( 'mtime' , pk , sc , off )
+  call checki( 'parcel mtime stays lossless' , pk , pk_none )
+  call pack_parcel( 'th' , pk , sc , off )
+  call checki( 'parcel th falls through to common' , pk , pk_i2 )
+
+  ! round trip: pack then unpack must land within half a step
+  call pack_gridded( 'th' , pk , sc , off )
+  x  = 312.3456_real32
+  q2 = pack_i2( x , sc , off )
+  y  = real(q2,real32)*sc + off
+  call checkl( 'th 312.3456 round-trips within half-step' , abs(y-x).le.0.5*sc*1.0001 )
+
+  call pack_parcel( 'x' , pk , sc , off )
+  x  = 499999.75_real32
+  q4 = pack_i4( x , sc , off )
+  y  = real(q4,real32)*sc + off
+  call checkl( 'parcel x 499999.75 round-trips exactly' , abs(y-x).le.0.5*sc*1.0001 )
+
+  ! zero and sign
+  call pack_gridded( 'w' , pk , sc , off )
+  call checkl( 'w = 0 packs to 0' , pack_i2(0.0_real32,sc,off).eq.0_2 )
+  call checkl( 'w = -12.34 packs negative' , pack_i2(-12.34_real32,sc,off).lt.0_2 )
+  call checkl( 'w round-to-nearest: 0.014 -> 1' , pack_i2(0.014_real32,sc,off).eq.1_2 )
+  call checkl( 'w round-to-nearest: 0.016 -> 2' , pack_i2(0.016_real32,sc,off).eq.2_2 )
+
+  ! CLAMPING, not wrapping -- the property that makes overflow survivable
+  call checkl( 'huge +ve clamps to +32767' , pack_i2(1.0e6_real32,sc,off).eq.32767_2 )
+  call checkl( 'huge -ve clamps to -32767' , pack_i2(-1.0e6_real32,sc,off).eq.-32767_2 )
+
+  ! range check agrees with the clamp
+  call checkl( 'range_ok true inside'  , pack_range_ok(-300.0,300.0,pk_i2,sc,off) )
+  call checkl( 'range_ok false outside', .not.pack_range_ok(-300.0,400.0,pk_i2,sc,off) )
+  call checkl( 'range_ok true for pk_none' , pack_range_ok(-1.0e30,1.0e30,pk_none,sc,off) )
+
+  ! elemental over an array matches the scalar calls
+  fv  = (/ -3.21_real32 , 0.0_real32 , 47.89_real32 /)
+  qv2 = pack_i2( fv , sc , off )
+  call checkl( 'elemental pack_i2 matches scalar' ,                         &
+       qv2(1).eq.pack_i2(fv(1),sc,off) .and.                                &
+       qv2(2).eq.pack_i2(fv(2),sc,off) .and.                                &
+       qv2(3).eq.pack_i2(fv(3),sc,off) )
+
+  output_pack = 0
+  prcl_pack   = 0
+
+!-----------------------------------------------------------------------
 
   print *,'==================================================='
   if( nfail.eq.0 )then
@@ -262,5 +353,6 @@
       call checkl( trim(label) , worst.le.bound )
       print *,'         worst relative error = ',worst,'  bound = ',bound
     end subroutine check_relerr
+
 
   END PROGRAM test_quantize

@@ -45,7 +45,7 @@ NPARCELS=200000
 mkdir -p "$ROOT"
 
 make_case () {
-  local name=$1 filetype=$2 nxy=$3 iprcl=$4 var16=$5 gdig=$6 pdig=$7
+  local name=$1 filetype=$2 nxy=$3 iprcl=$4 var16=$5 gdig=$6 pdig=$7 gpack=${8:-0} ppack=${9:-0}
   local d="$ROOT/$name"
 
   rm -rf "$d"
@@ -70,22 +70,27 @@ make_case () {
 
   # the compression knobs are new, so they are not in the reference namelist:
   # insert them into &param9 rather than substituting.
-  sed -i "/^ output_filetype  =/a\\ output_deflate_level = 1,\\n output_signif_digits = $gdig,\\n prcl_signif_digits   = $pdig," "$n"
+  sed -i "/^ output_filetype  =/a\\ output_deflate_level = 1,\\n output_signif_digits = $gdig,\\n prcl_signif_digits   = $pdig,\\n output_pack = $gpack,\\n prcl_pack = $ppack," "$n"
 
-  echo "  $name: filetype=$filetype nx=ny=$nxy iprcl=$iprcl var16=$var16 gdig=$gdig pdig=$pdig"
+  echo "  $name: filetype=$filetype nx=ny=$nxy iprcl=$iprcl var16=$var16 gdig=$gdig pdig=$pdig gpack=$gpack ppack=$ppack"
 }
 
 echo "building cases under $ROOT"
 
-#          name                 ftype nxy iprcl var16 gdig pdig
-make_case  regress_ft2              2  40     0     1    0    0
-make_case  regress_ft4              4  40     0     1    0    0
-make_case  prcl_ft4_lossless        4  40     1     1    0    0
-make_case  prcl_ft4_lossy           4  40     1     1    3    3
-make_case  prcl_ft2_lossless        2  40     1     0    0    0
-make_case  prcl_ft2_lossy           2  40     1     0    3    3
-make_case  uneven_ft4_lossless      4  41     1     1    0    0
-make_case  uneven_ft4_lossy         4  41     1     1    3    3
+#          name                 ftype nxy iprcl var16 gdig pdig gpack ppack
+make_case  regress_ft2              2  40     0     1    0    0     0     0
+make_case  regress_ft4              4  40     0     1    0    0     0     0
+make_case  prcl_ft4_lossless        4  40     1     1    0    0     0     0
+make_case  prcl_ft4_lossy           4  40     1     1    3    3     0     0
+make_case  prcl_ft2_lossless        2  40     1     0    0    0     0     0
+make_case  prcl_ft2_lossy           2  40     1     0    3    3     0     0
+make_case  uneven_ft4_lossless      4  41     1     1    0    0     0     0
+make_case  uneven_ft4_lossy         4  41     1     1    3    3     0     0
+# fixed-point packing (output_pack/prcl_pack).  Pairs with the *_lossless
+# cases above for the error bound, and ft4-vs-ft2 for write-path agreement.
+make_case  pack_ft4                 4  40     1     1    0    0     1     1
+make_case  pack_ft2                 2  40     1     0    0    0     1     1
+make_case  pack_uneven_ft4          4  41     1     1    0    0     1     1
 
 cp "$(dirname "$0")/verify.slurm" "$ROOT/"
 cp "$(dirname "$0")/compare.py"   "$ROOT/"
