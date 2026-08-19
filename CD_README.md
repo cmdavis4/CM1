@@ -88,16 +88,25 @@ Precision is per-variable, from a table in `src/quantize.F`:
 | `nc*` number concentrations | 1 /kg | int32 |
 | parcel `x`, `y` | 0.25 m | int32 |
 | parcel `z` | 0.05 m | int32 |
-| parcel `b` / `vpg` | 1e-4 / 2e-4 m/s/s | int16 |
-| parcel `zvort` | 2e-5 /s | int16 |
+| parcel `b` / `vpg` | 2e-4 / 4e-4 m/s/s | int16 |
+| parcel `zvort` | 4e-5 /s | int16 |
 | base state, `mtime`, 2d surface fields, anything untabled | -- | float (lossless) |
 
 The offsets are **constants**, not derived from the data: a netcdf variable
 has one `add_offset` for the whole array, all ranks must agree (the writers
 define collectively), and a data-derived offset would differ between output
 times. They were chosen from measured min/max over the whole `sc_lt21` run
-with generous headroom -- the tightest is `th`, which still has 62% of the
-int16 range spare.
+with generous headroom.  Measured over 16 output times spanning the whole run,
+the closest any field comes to its limit is parcel `vpg`, which would need a
+storm **2.2x** more extreme than anything observed -- and its step was then
+doubled (along with `b` and `zvort`) to make that 4.4x, since a coarser step on
+those three costs no bytes and no useful precision.  Everything stored as
+int32 (`prs`, `pi`, `rho`, all mixing ratios, all `nc*`, parcel positions) has
+580x-70000x headroom and cannot realistically clamp at all.
+
+The one range tied to configuration rather than storm intensity is `th`, whose
+727 K cap corresponds to a model top near 29 km.  At `ztop = 22000` there is
+~7 km of margin; raise the top a long way and this is the field to widen.
 
 Out-of-range values are **clamped, never wrapped**, and every write path calls
 `pack_check`, which prints a loud `WARNING: fixed-point packing CLAMPED` block

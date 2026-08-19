@@ -414,16 +414,21 @@
         case( 'z' )
           pk = pk_i4 ; scale = 0.05 ; offset = 11000.0
 
-        ! buoyancy and vertical perturbation pressure gradient are O(1) m/s/s;
-        ! vpg gets the coarser step because it reaches 3 m/s/s in the updraft.
+        ! Buoyancy, vertical perturbation pressure gradient and vertical
+        ! vorticity.  Steps here are deliberately twice as coarse as the
+        ! measurement floor needs: over the whole sc_lt21 run these three are
+        ! the tightest fields in the table (observed |vpg| 2.97 against a
+        ! +/-3.28 cap at the finer step, i.e. only 2.2x margin), and they are
+        ! small fields, so buying 2x the range costs nothing -- a coarser step
+        ! compresses very slightly *better*.  4e-4 m/s/s is still 0.013% of a
+        ! 3 m/s/s updraft signal.
         case( 'b' )
-          pk = pk_i2 ; scale = 1.0e-4 ; offset = 0.0
+          pk = pk_i2 ; scale = 2.0e-4 ; offset = 0.0     ! +/-6.55 m/s/s
         case( 'vpg' )
-          pk = pk_i2 ; scale = 2.0e-4 ; offset = 0.0
+          pk = pk_i2 ; scale = 4.0e-4 ; offset = 0.0     ! +/-13.1 m/s/s
 
-        ! vertical vorticity is |zvort| < 0.2 /s; 2e-5 reaches +/-0.65 /s.
         case( 'zvort' )
-          pk = pk_i2 ; scale = 2.0e-5 ; offset = 0.0
+          pk = pk_i2 ; scale = 4.0e-5 ; offset = 0.0     ! +/-1.31 /s
 
         case default
           call pack_common( name , pk , scale , offset )

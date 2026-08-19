@@ -237,6 +237,27 @@
   call checkl( 'parcel x step 0.25'    , abs(sc-0.25).lt.1.0e-9 )
   call pack_parcel( 'zvort' , pk , sc , off )
   call checki( 'parcel zvort -> int16' , pk , pk_i2 )
+
+  ! The three tightest fields in the table.  Assert the RANGE, not just the
+  ! step: these steps were widened specifically to buy clamping margin, so
+  ! the range is the property worth locking down.  Bounds below are ~2x the
+  ! most extreme value seen anywhere in the sc_lt21 run.
+  call pack_parcel( 'vpg' , pk , sc , off )
+  call checkl( 'parcel vpg step 4e-4'          , abs(sc-4.0e-4).lt.1.0e-12 )
+  call checkl( 'parcel vpg reaches +/-6 m/s/s' , pack_range_ok(-6.0,6.0,pk,sc,off) )
+  call checkl( 'parcel vpg clamps past 14'     , .not.pack_range_ok(-14.0,14.0,pk,sc,off) )
+  call pack_parcel( 'b' , pk , sc , off )
+  call checkl( 'parcel b step 2e-4'            , abs(sc-2.0e-4).lt.1.0e-12 )
+  call checkl( 'parcel b reaches +/-3 m/s/s'   , pack_range_ok(-3.0,3.0,pk,sc,off) )
+  call pack_parcel( 'zvort' , pk , sc , off )
+  call checkl( 'parcel zvort step 4e-5'        , abs(sc-4.0e-5).lt.1.0e-12 )
+  call checkl( 'parcel zvort reaches +/-1 /s'  , pack_range_ok(-1.0,1.0,pk,sc,off) )
+
+  ! and the fields that were left alone, for the same reason
+  call pack_gridded( 'w' , pk , sc , off )
+  call checkl( 'gridded w reaches +/-300 m/s'  , pack_range_ok(-300.0,300.0,pk,sc,off) )
+  call pack_gridded( 'th' , pk , sc , off )
+  call checkl( 'gridded th reaches 100-700 K'  , pack_range_ok(100.0,700.0,pk,sc,off) )
   call pack_parcel( 'mtime' , pk , sc , off )
   call checki( 'parcel mtime stays lossless' , pk , pk_none )
   call pack_parcel( 'th' , pk , sc , off )

@@ -54,7 +54,7 @@ PACK_GRID = {k: v for k, v in PACK_COMMON.items()
              if k not in ("th0", "prs0", "pi0", "rho0", "qv0", "u0", "v0")}
 PACK_PRCL = dict(PACK_COMMON,
                  x=(0.25, 250000.0, 4), y=(0.25, 150000.0, 4), z=(0.05, 11000.0, 4),
-                 b=(1e-4, 0.0, 2), vpg=(2e-4, 0.0, 2), zvort=(2e-5, 0.0, 2))
+                 b=(2e-4, 0.0, 2), vpg=(4e-4, 0.0, 2), zvort=(4e-5, 0.0, 2))
 PACK_PRCL.pop("mtime", None)
 
 nfail = 0
