@@ -1,0 +1,40 @@
+  CM1 emulation of the RAMS run tracer_soundings/regen_original/
+  ccn1max-500_regen-on (thermals project): an isolated deep-convective
+  storm on the 2022-06-02 TRACER sounding, triggered by a Gaussian
+  surface heating burst.
+
+  Domain and numerics (from the RAMSIN):
+    - 400 x 400 x 440 points at 50 m (20 x 20 x 22 km), dtl = 0.5 s,
+      2 h.
+    - Open radiative lateral boundaries (cstar = 40, RAMS CPHAS),
+      free-slip bottom and top, no surface fluxes, radiation or
+      rotation, zero wind.
+    - Rayleigh damping above 21.6 km with a 60 s time scale.
+    - Smagorinsky closure (sgsmodel = 2), the nearest match to RAMS
+      IDIFFK = 2.
+
+  Forcing (&flux_forcing_params, see CD_README.md):
+    - 450 W/m2 column heating, Gaussian with a 7.5 km 1/e radius at the
+      domain center, e-folding height 225 m.
+    - Ramp up 1-1200 s, peak to 3000 s, ramp down to 3120 s.
+    - Initial theta noise of +-0.1 K, tapering to zero at 2 km
+      (randp_amplitude, randp_depth).
+
+  Microphysics: Morrison 2-moment (ptype = 5) with a fixed droplet
+  concentration of 300 /cm3 (ndcnst), which is the droplet
+  concentration in the first cloud of the RAMS CCN-500 run. RAMS
+  prognostic CCN and aerosol regeneration are not emulated.
+
+  input_sounding is the horizontal mean of the RAMS t = 0 analysis file
+  on the same 50 m levels. To rebuild it:
+    python make_input_sounding.py a-A-2000-01-01-000000-g1.h5 \
+        a-A-2000-01-01-000000-head.txt input_sounding
+
+  Parcels: density mode (var18 = 2) with var19 = 7e-6 parcels per kg
+  of dry air, which is one parcel per 50 m cell near the surface. With
+  no bounding box this seeds about 2.8e7 parcels.
+
+  Output: gridded and parcel output every 10 s, as the RAMS lite
+  files. output_filetype = 4 and var16 = 1 use the parallel netcdf
+  writers, which need a parallel netcdf build. Use output_filetype = 1
+  and var16 = 0 with a serial netcdf build.

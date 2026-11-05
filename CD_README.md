@@ -157,3 +157,45 @@ quantize.o: input.o
 writeout.o: ... quantize.o
 writeout_nc.o: constants.o input.o quantize.o
 ```
+
+FLUX FORCING (`&flux_forcing_params`):
+
+A port of the potential-temperature flux forcing from the RAMS thermals branch
+(`apply_single_flux_forcing` in `src/surface/ruser.f90`, branch `cumulus_main`).
+Each forcing adds a column-integrated heating, in W/m2, with three factors:
+
+* a horizontal Gaussian `exp(-r**2)`, where `r` is the distance from the center
+  divided by the 1/e radius;
+* an exponential vertical profile, split so that the layer shares sum to 1;
+* a trapezoid in time: linear ramp up, flat peak, linear ramp down.
+
+| Variable | Meaning | RAMS equivalent |
+|---|---|---|
+| `nflux_forcings` | number of forcings, 0-10 (default 0 = off) | `NFLUX_FORCINGS` |
+| `flux_x_center`, `flux_y_center` | center in `xh`/`yh` coordinates (m) | center of `IFLUX_XIA..XIZ`, `YJA..YJZ` |
+| `flux_radius_x`, `flux_radius_y` | 1/e radius (m); 0 = uniform | `(XIZ-XIA)*dx/2` |
+| `flux_atten_height` | e-folding height (m); 0 = all heat in the lowest level | `zt(IFLUX_K_ATTEN)`; 0 = `K_ATTEN=0` |
+| `flux_amp_wm2` | column-integrated peak heating (W/m2) | `FLUX_AMP_WM2` |
+| `flux_tstart`, `flux_tmax`, `flux_tdecay`, `flux_tend` | time envelope (s) | `IFLUX_TSTART` etc. |
+
+Each variable except `nflux_forcings` is an array, one entry per forcing. The
+RAMS random option (`IFLUX_RANDPERT`) is not ported. The heating converts to a
+theta tendency as `Q / (rho0 dz cp)`, exactly as in RAMS. That conversion omits
+1/pi, so it is about 1% low near the surface. With `output_thbudget = 1` the
+heating is written as `ptb_flux`. At the first step, rank 0 prints the peak
+heating rate in the lowest level, which can be compared with the RAMS stdout
+line "approx max heating rate".
+
+RANDOM PERTURBATION SHAPE (`&param2`):
+
+* `randp_amplitude` (default `0.25`): peak amplitude (K) of the `irandp = 1`
+  perturbations. Stock CM1 hardcoded 0.25.
+* `randp_depth` (default `0` = no taper): when positive, the amplitude
+  decreases linearly from full at the lowest level to zero at `randp_depth`
+  meters above it. Levels above that depth are not perturbed. This is the
+  RAMS `IBUBBLE=3` shape.
+
+Both apply only to `testcase = 0`.
+
+`run/config_files/rams_tracer_ccn500/` uses both options to emulate the RAMS
+run `tracer_soundings/regen_original/ccn1max-500_regen-on` (thermals project).
