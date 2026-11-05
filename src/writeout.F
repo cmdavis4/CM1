@@ -5502,6 +5502,29 @@
   !.............................................
 
   IF( output_thbudget.eq.1 )THEN
+    if( td_flux.ge.1 )then
+      n_out = n_out + 1
+      name_output(n_out) = 'ptb_flux'
+      desc_output(n_out) = 'pot tem. budget: flux forcing'
+      unit_output(n_out) = 'K/s'
+      grid_output(n_out) = 's'     ! s=scalar pts (3d) ; u=u pts (3d) ; v=v pts (3d) ; w=w pts (3d) ; 2=2d scalar pts
+
+          !$omp parallel do default(shared)  &
+          !$omp private(i,j,k)
+          do k=1,maxk
+          do j=1,nj
+          do i=1,ni
+            dum1(i,j,k) = tdiag(i,j,k,td_flux)
+          enddo
+          enddo
+          enddo
+        call   writes(dum1,fnum,srec,nwrite,nloop,dat1,dat2,dat3,reqt,myi1p,myi2p,myj1p,myj2p,ncid,time_index,name_output(n_out),levs_output(n_out),sigma,zs,zh,dum9)
+    endif
+  ENDIF
+
+  !.............................................
+
+  IF( output_thbudget.eq.1 )THEN
     if( td_lsw.ge.1 )then
       n_out = n_out + 1
       name_output(n_out) = 'ptb_lsw'

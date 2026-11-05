@@ -141,7 +141,7 @@
               set_znt,set_flx,set_ust,ramp_sgs,t2p_avg,                       &
               qd_dbz,qd_vtc,qd_vtr,qd_vts,qd_vtg,qd_vti,                      &
               td_hadv,td_vadv,td_hturb,td_vturb,td_mp,td_rdamp,               &
-              td_rad,td_div,td_diss,td_pbl,td_lsw,td_efall,                   &
+              td_rad,td_div,td_diss,td_pbl,td_lsw,td_efall,td_flux,           &
               td_cond,td_evac,td_evar,td_dep,td_subl,td_melt,td_frz,          &
               td_nudge,                                                       &
               qd_hadv,qd_vadv,qd_hturb,qd_vturb,qd_mp,qd_pbl,qd_lsw,          &
@@ -240,6 +240,39 @@
       integer :: output_uv_ground = 0  ! output u,v, as ground relative
 
 !-----------------------------------------------------------------------
+!  Random initial theta perturbations (irandp=1, testcase=0):
+
+      ! Peak amplitude of the perturbations (K); stock CM1 hardcoded 0.25
+      real :: randp_amplitude = 0.25
+      ! Depth over which the amplitude tapers linearly to zero (m);
+      ! 0 = full amplitude at every level, as in stock CM1
+      real :: randp_depth = 0.0
+
+!-----------------------------------------------------------------------
+!  Potential temperature flux forcing (port of the RAMS thermals-branch
+!  NFLUX_FORCINGS option).  See flux_forcing_tendency in solve1.F.
+
+      ! Maximum number of independent forcings
+      integer, parameter :: max_flux_forcings = 10
+      ! Number of active forcings; 0 = off
+      integer :: nflux_forcings = 0
+      ! Horizontal center of each forcing, in xh/yh coordinates (m)
+      real, dimension(max_flux_forcings) :: flux_x_center = 0.0
+      real, dimension(max_flux_forcings) :: flux_y_center = 0.0
+      ! 1/e radius of the horizontal Gaussian (m); 0 = uniform in that direction
+      real, dimension(max_flux_forcings) :: flux_radius_x = 0.0
+      real, dimension(max_flux_forcings) :: flux_radius_y = 0.0
+      ! e-folding height of the vertical decay (m); 0 = all heat in the lowest level
+      real, dimension(max_flux_forcings) :: flux_atten_height = 0.0
+      ! Column-integrated peak heating (W/m2)
+      real, dimension(max_flux_forcings) :: flux_amp_wm2 = 0.0
+      ! Time envelope (s): ramp up tstart->tmax, peak tmax->tdecay, ramp down tdecay->tend
+      real, dimension(max_flux_forcings) :: flux_tstart = 0.0
+      real, dimension(max_flux_forcings) :: flux_tmax = 0.0
+      real, dimension(max_flux_forcings) :: flux_tdecay = 0.0
+      real, dimension(max_flux_forcings) :: flux_tend = 0.0
+
+!-----------------------------------------------------------------------
 !  timestats:
 
       real clock_rate,time_sound,time_buoyan,time_turb,              &
@@ -276,7 +309,7 @@
           wbc,ebc,sbc,nbc,bbc,tbc,irbc,roflux,nudgeobc,                 &
           isnd,iwnd,itern,iinit,                                        &
           irandp,ibalance,iorigin,axisymm,imove,iptra,npt,pdtra,        &
-          iprcl,nparcels
+          iprcl,nparcels,randp_amplitude,randp_depth
       namelist /param3/ kdiff2,kdiff6,fcor,kdiv,alph,rdalpha,zd,xhd,alphobc, &
                         umove,vmove,v_t,l_h,lhref1,lhref2,l_inf,ndcnst,nt_c, &
                         csound,cstar
@@ -353,6 +386,10 @@
               do_ib,ib_init,top_cd,side_cd
       namelist /param21/                                                      &
               hurr_vg,hurr_rad,hurr_vgpl,hurr_rotate
+      namelist /flux_forcing_params/                                          &
+              nflux_forcings,flux_x_center,flux_y_center,                     &
+              flux_radius_x,flux_radius_y,flux_atten_height,flux_amp_wm2,     &
+              flux_tstart,flux_tmax,flux_tdecay,flux_tend
 
 !  End namelists:
 

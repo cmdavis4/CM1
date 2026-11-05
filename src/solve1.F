@@ -1111,6 +1111,11 @@
 
       ENDIF
 
+      IF( nflux_forcings.ge.1 )THEN
+        ! Potential temperature flux forcing (port of the RAMS option):
+        call flux_forcing_tendency(mtime,xh,yh,sigmaf,zf,rho0,thten1,tdiag,dotbud)
+      ENDIF
+
 
 !--------------------------------------------------------------------
 !  subgrid turbulence tendencies:
@@ -1789,6 +1794,154 @@
 
 
       end subroutine solve1
+
+
+!-----------------------------------------------------------------------
+!  Potential temperature flux forcing.
+!
+!  Port of apply_single_flux_forcing from the RAMS thermals branch
+!  (src/surface/ruser.f90, branch cumulus_main).  Each forcing deposits a
+!  column-integrated heating A (W/m2) shaped as
+!    A * G(r) * f(t) * [exp(-z_k/L) - exp(-z_{k+1}/L)]
+!  where G is a horizontal Gaussian exp(-r**2), f(t) is a trapezoid in
+!  time, and the bracket is the share of an exponential profile that falls
+!  in layer k.  The layer shares sum to 1, so the column integral of the
+!  heating equals A * G * f.
+!
+!  The heating is converted with dtheta/dt = Q / (rho0 * dz * cp), exactly
+!  as RAMS does.  This omits the 1/pi factor of a true theta tendency, so
+!  it is about 1% low near the surface; it is kept for parity with RAMS.
+!
+!  Parameters:
+!    mtime   (double)          model time at the start of this step (s)
+!    xh, yh  (real, 1D)        scalar-point coordinates (m)
+!    sigmaf  (real, 1D)        computational height of w levels (m)
+!    zf      (real, 3D)        physical height of w levels (m)
+!    rho0    (real, 3D)        base-state density (kg/m3)
+!    thten1  (real, 3D)        slow theta tendency (K/s); forcing added here
+!    tdiag   (real, 4D)        theta budget; the td_flux slice is filled
+!    dotbud  (logical)         whether the theta budget is being stored
+!-----------------------------------------------------------------------
+
+      subroutine flux_forcing_tendency(mtime,xh,yh,sigmaf,zf,rho0,thten1,tdiag,dotbud)
+      use input
+      use constants
+      implicit none
+
+      double precision, intent(in) :: mtime
+      real, intent(in), dimension(ib:ie) :: xh
+      real, intent(in), dimension(jb:je) :: yh
+      real, intent(in), dimension(kb:ke+1) :: sigmaf
+      real, intent(in), dimension(ib:ie,jb:je,kb:ke+1) :: zf
+      real, intent(in), dimension(ib:ie,jb:je,kb:ke) :: rho0
+      real, intent(inout), dimension(ib:ie,jb:je,kb:ke) :: thten1
+      real, intent(inout), dimension(ibdt:iedt,jbdt:jedt,kbdt:kedt,ntdiag) :: tdiag
+      logical, intent(in) :: dotbud
+
+      integer :: i,j,k,n
+      real :: model_time,temporal_factor
+      real :: x_distance_scaled,y_distance_scaled,horizontal_gaussian
+      real :: column_heating_wm2,layer_heating_wm2,layer_thickness
+      real :: lowest_layer_heating_rate
+      real, dimension(nk) :: layer_share_of_column
+      ! First-call flag for the heating-rate printout
+      logical, save :: announced = .false.
+
+      ! Model time as a single-precision real, for the envelope comparisons
+      model_time = sngl(mtime)
+
+      ! Zero the budget slice; each forcing below adds to it
+      if( dotbud .and. td_flux.ge.1 )then
+        do k=1,nk
+        do j=1,nj
+        do i=1,ni
+          tdiag(i,j,k,td_flux) = 0.0
+        enddo
+        enddo
+        enddo
+      endif
+
+      forcings:  &
+      do n=1,nflux_forcings
+
+        ! Share of the column heating in each layer, from the exponential
+        ! profile measured upward from the surface (sigmaf(1) = 0)
+        if( flux_atten_height(n).le.0.0 )then
+          ! Surface-flux mode: all of the heat goes into the lowest layer
+          layer_share_of_column(:) = 0.0
+          layer_share_of_column(1) = 1.0
+        else
+          do k=1,nk
+            layer_share_of_column(k) = exp(-sigmaf(k)/flux_atten_height(n))    &
+                                     - exp(-sigmaf(k+1)/flux_atten_height(n))
+          enddo
+        endif
+
+        ! Print the peak heating rate in the lowest layer once, for
+        ! comparison with the RAMS stdout line "approx max heating rate"
+        if( .not. announced .and. myid.eq.0 )then
+          layer_thickness = zf(1,1,2)-zf(1,1,1)
+          lowest_layer_heating_rate = flux_amp_wm2(n)*layer_share_of_column(1)   &
+                                    /(rho0(1,1,1)*layer_thickness*cp)
+          print *,'  flux forcing ',n,': peak heating rate in lowest layer = ',  &
+                  lowest_layer_heating_rate*3600.0,' K/hr'
+        endif
+
+        ! Time envelope: linear ramp up, flat peak, linear ramp down
+        if( model_time.lt.flux_tstart(n) )then
+          temporal_factor = 0.0
+        elseif( model_time.lt.flux_tmax(n) )then
+          temporal_factor = (model_time-flux_tstart(n))/(flux_tmax(n)-flux_tstart(n))
+        elseif( model_time.lt.flux_tdecay(n) )then
+          temporal_factor = 1.0
+        elseif( model_time.lt.flux_tend(n) )then
+          temporal_factor = 1.0-(model_time-flux_tdecay(n))/(flux_tend(n)-flux_tdecay(n))
+        else
+          temporal_factor = 0.0
+        endif
+
+        ! Nothing to add outside the envelope
+        if( temporal_factor.le.0.0 ) cycle forcings
+
+        !$omp parallel do default(shared)  &
+        !$omp private(i,j,k,x_distance_scaled,y_distance_scaled,horizontal_gaussian,  &
+        !$omp column_heating_wm2,layer_heating_wm2,layer_thickness)
+        do j=1,nj
+        do i=1,ni
+
+          ! Horizontal distance from the center in units of the 1/e radius;
+          ! a zero radius makes the forcing uniform in that direction
+          x_distance_scaled = 0.0
+          if( flux_radius_x(n).gt.0.0 ) x_distance_scaled = (xh(i)-flux_x_center(n))/flux_radius_x(n)
+          y_distance_scaled = 0.0
+          if( flux_radius_y(n).gt.0.0 .and. ny.gt.1 ) y_distance_scaled = (yh(j)-flux_y_center(n))/flux_radius_y(n)
+
+          ! Horizontal Gaussian footprint
+          horizontal_gaussian = exp(-(x_distance_scaled**2+y_distance_scaled**2))
+
+          ! Column-integrated heating at this point and time (W/m2)
+          column_heating_wm2 = flux_amp_wm2(n)*horizontal_gaussian*temporal_factor
+
+          do k=1,nk
+            ! Heating deposited in this layer (W/m2)
+            layer_heating_wm2 = column_heating_wm2*layer_share_of_column(k)
+            ! Physical thickness of this layer
+            layer_thickness = zf(i,j,k+1)-zf(i,j,k)
+            ! Convert to a theta tendency (K/s) and add it
+            thten1(i,j,k) = thten1(i,j,k) + layer_heating_wm2/(rho0(i,j,k)*layer_thickness*cp)
+            if( dotbud .and. td_flux.ge.1 )then
+              tdiag(i,j,k,td_flux) = tdiag(i,j,k,td_flux) + layer_heating_wm2/(rho0(i,j,k)*layer_thickness*cp)
+            endif
+          enddo
+
+        enddo
+        enddo
+
+      enddo  forcings
+
+      announced = .true.
+
+      end subroutine flux_forcing_tendency
 
 
   END MODULE solve1_module

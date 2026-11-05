@@ -299,6 +299,11 @@
 721   continue
       rewind(20)
 
+      ! Optional group: a namelist.input without it leaves the forcing off
+      read(20,nml=flux_forcing_params,end=731)
+731   continue
+      rewind(20)
+
       close(unit=20)
 
 #ifdef MPI
@@ -367,6 +372,8 @@
       call MPI_BCAST(itern    ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST(iinit    ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST(irandp   ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
+      call MPI_BCAST(randp_amplitude,1,MPI_REAL,0,MPI_COMM_WORLD,ierr)
+      call MPI_BCAST(randp_depth    ,1,MPI_REAL,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST(ibalance ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST(iorigin  ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST(axisymm  ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
@@ -656,6 +663,19 @@
       call MPI_BCAST(lsnudge_start    ,1,MPI_REAL,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST(lsnudge_end      ,1,MPI_REAL,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST(lsnudge_ramp_time,1,MPI_REAL,0,MPI_COMM_WORLD,ierr)
+
+      ! flux forcing: every rank applies the forcing to its own subdomain
+      call MPI_BCAST(nflux_forcings   ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
+      call MPI_BCAST(flux_x_center    ,max_flux_forcings,MPI_REAL,0,MPI_COMM_WORLD,ierr)
+      call MPI_BCAST(flux_y_center    ,max_flux_forcings,MPI_REAL,0,MPI_COMM_WORLD,ierr)
+      call MPI_BCAST(flux_radius_x    ,max_flux_forcings,MPI_REAL,0,MPI_COMM_WORLD,ierr)
+      call MPI_BCAST(flux_radius_y    ,max_flux_forcings,MPI_REAL,0,MPI_COMM_WORLD,ierr)
+      call MPI_BCAST(flux_atten_height,max_flux_forcings,MPI_REAL,0,MPI_COMM_WORLD,ierr)
+      call MPI_BCAST(flux_amp_wm2     ,max_flux_forcings,MPI_REAL,0,MPI_COMM_WORLD,ierr)
+      call MPI_BCAST(flux_tstart      ,max_flux_forcings,MPI_REAL,0,MPI_COMM_WORLD,ierr)
+      call MPI_BCAST(flux_tmax        ,max_flux_forcings,MPI_REAL,0,MPI_COMM_WORLD,ierr)
+      call MPI_BCAST(flux_tdecay      ,max_flux_forcings,MPI_REAL,0,MPI_COMM_WORLD,ierr)
+      call MPI_BCAST(flux_tend        ,max_flux_forcings,MPI_REAL,0,MPI_COMM_WORLD,ierr)
 
       call MPI_BCAST( do_ib           ,1,MPI_LOGICAL,0,MPI_COMM_WORLD,ierr)
       call MPI_BCAST( ib_init         ,1,MPI_INTEGER,0,MPI_COMM_WORLD,ierr)
@@ -2921,6 +2941,8 @@
       if(dowr) write(outfile,*) 'itern     =',itern
       if(dowr) write(outfile,*) 'iinit     =',iinit
       if(dowr) write(outfile,*) 'irandp    =',irandp
+      if(dowr) write(outfile,*) 'randp_amplitude =',randp_amplitude
+      if(dowr) write(outfile,*) 'randp_depth     =',randp_depth
       if(dowr) write(outfile,*) 'ibalance  =',ibalance
       if(dowr) write(outfile,*) 'iorigin   =',iorigin
       if(dowr) write(outfile,*) 'axisymm   =',axisymm
@@ -5335,6 +5357,7 @@
       td_div   = 0
       td_diss  = 0
       td_pbl   = 0
+      td_flux  = 0
       td_lsw   = 0
       td_efall = 0
 
@@ -5424,6 +5447,11 @@
         if( use_pbl )then
           ntdiag = ntdiag + 1
           td_pbl = ntdiag
+        endif
+
+        if( nflux_forcings.ge.1 )then
+          ntdiag = ntdiag + 1
+          td_flux = ntdiag
         endif
 
         if( dolsw )then
@@ -6978,6 +7006,7 @@
           if( td_div    .ge.1 ) write(outfile,*) '  td_div    = ',td_div
           if( td_diss   .ge.1 ) write(outfile,*) '  td_diss   = ',td_diss
           if( td_pbl    .ge.1 ) write(outfile,*) '  td_pbl    = ',td_pbl
+          if( td_flux   .ge.1 ) write(outfile,*) '  td_flux   = ',td_flux
           if( td_lsw    .ge.1 ) write(outfile,*) '  td_lsw    = ',td_lsw
           if( td_efall  .ge.1 ) write(outfile,*) '  td_efall  = ',td_efall
           if( ptype.eq.5 )then
@@ -9635,6 +9664,42 @@
         if(dowr) write(outfile,*) '  lsnudge_ramp_time  = ',lsnudge_ramp_time
         if(dowr) write(outfile,*)
       ENDIF
+
+!--------------------------------------------------------------
+!  Flux forcing: check and echo the settings.
+
+      ! Reject a forcing count the arrays cannot hold
+      IF( nflux_forcings.lt.0 .or. nflux_forcings.gt.max_flux_forcings )THEN
+        if(myid.eq.0) print *,'  nflux_forcings must be between 0 and ',max_flux_forcings
+        call stopcm1
+      ENDIF
+
+      ! Reject negative radii and heights, which have no meaning here
+      do n=1,nflux_forcings
+        IF( flux_radius_x(n).lt.0.0 .or. flux_radius_y(n).lt.0.0 .or.  &
+            flux_atten_height(n).lt.0.0 )THEN
+          if(myid.eq.0) print *,'  flux forcing ',n,': radii and atten height must be >= 0'
+          call stopcm1
+        ENDIF
+      enddo
+
+      ! Echo each active forcing
+      if(dowr) write(outfile,*)
+      if(dowr) write(outfile,*) '  nflux_forcings     = ',nflux_forcings
+      do n=1,nflux_forcings
+        if(dowr) write(outfile,*) '  flux forcing ',n
+        if(dowr) write(outfile,*) '    flux_x_center     = ',flux_x_center(n)
+        if(dowr) write(outfile,*) '    flux_y_center     = ',flux_y_center(n)
+        if(dowr) write(outfile,*) '    flux_radius_x     = ',flux_radius_x(n)
+        if(dowr) write(outfile,*) '    flux_radius_y     = ',flux_radius_y(n)
+        if(dowr) write(outfile,*) '    flux_atten_height = ',flux_atten_height(n)
+        if(dowr) write(outfile,*) '    flux_amp_wm2      = ',flux_amp_wm2(n)
+        if(dowr) write(outfile,*) '    flux_tstart       = ',flux_tstart(n)
+        if(dowr) write(outfile,*) '    flux_tmax         = ',flux_tmax(n)
+        if(dowr) write(outfile,*) '    flux_tdecay       = ',flux_tdecay(n)
+        if(dowr) write(outfile,*) '    flux_tend         = ',flux_tend(n)
+      enddo
+      if(dowr) write(outfile,*)
 
 !--------------------------------------------------------------
 

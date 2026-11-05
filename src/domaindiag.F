@@ -6582,6 +6582,20 @@
 
       !c-c-c-c-c-c-c-c-c-c
 
+      if( td_flux.ge.1 )then
+
+        nvar = nvar+1
+        varname(nvar) = 'ptb_flux'
+        vardesc(nvar) = 'theta budget: flux forcing'
+        varunit(nvar) = 'K/s'
+
+        call getavg3d(tdiag(ibdt,jbdt,kbdt,td_flux),savg)
+        call write3d(savg,trecs,trecw,vargrid,nvar,varname,vardesc,varunit)
+
+      endif
+
+      !c-c-c-c-c-c-c-c-c-c
+
       if( td_lsw.ge.1 )then
 
         nvar = nvar+1

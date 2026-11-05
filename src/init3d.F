@@ -143,7 +143,7 @@
       real :: r0_re87,rmax_re87,vmax_re87
 
       real rmin,foo1,foo2,umax,umin,vmin
-      real :: rand,rand2,amplitude
+      real :: rand,rand2,amplitude,randp_taper
       integer, dimension(:), allocatable :: sand
       double precision :: dpi
 
@@ -1623,14 +1623,22 @@
         ! not a pre-configured test case: 
 
         ! this is the amplitude of the theta perturbations
-        ! (plus or minus this value in K)
-        amplitude = 0.25
+        ! (plus or minus this value in K); set by namelist (default 0.25)
+        amplitude = randp_amplitude
 
         ! random numbers added here
         ! (can be modified to only place perturbations in certain
         !  locations, but this default code simply puts them
         !  everywhere)
         do k=1,nk
+          ! Taper the amplitude linearly from full at the lowest level to
+          ! zero at randp_depth above it, as RAMS IBUBBLE=3 does
+          ! (randp_depth = 0 keeps full amplitude at every level)
+          randp_taper = 1.0
+          if( randp_depth.gt.0.0 ) randp_taper = (randp_depth+sigma(1)-sigma(k))/randp_depth
+          ! Skip levels above the taper depth; every rank skips the same
+          ! levels, so the random stream stays consistent across ranks
+          if( randp_taper.le.0.0 ) cycle
           ! cm1r17: loop over entire domain
           do jj = 0,ny+2
           do ii = 0,nx+2
@@ -1640,7 +1648,7 @@
             j = jj - myj1 + 1
             ! check to see if this processor has this gridpoint:
             IF( i.ge.ib .and. i.le.ie .and. j.ge.jb .and. j.le.je )THEN
-              tha(i,j,k)=tha(i,j,k)+amplitude*(2.0*rand-1.0)
+              tha(i,j,k)=tha(i,j,k)+amplitude*randp_taper*(2.0*rand-1.0)
             ENDIF
           enddo
           enddo
