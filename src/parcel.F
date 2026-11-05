@@ -2331,8 +2331,12 @@
 !  at the vertical faces zf, for mass-weighted parcel initialization.
 !
 !    cummass(k) = integral from the surface up to face zf(k) of
-!                 rhod0 dz', where rhod0 = rho0/(1+qv0) is the dry-air
-!                 (partial) density.  cummass(1)=0, cummass(nk+1)=mcol.
+!                 rho0 dz'.  CM1 defines rho0 = p/(rd*T*(1+qv*reps)),
+!                 which is already the dry-air (partial) density, so no
+!                 vapor correction is applied here.  (Dividing by 1+qv0
+!                 again undercounted dry air by up to 1.6% near a moist
+!                 surface.)  qv0 is kept in the argument list unused.
+!                 cummass(1)=0, cummass(nk+1)=mcol.
 !    mcol       = total column dry-air mass per unit area (kg/m^2).
 !
 !  Assumes a horizontally homogeneous base state (flat terrain), so the
@@ -2349,7 +2353,7 @@
 
       cummass(1) = 0.0
       do k=1,nk
-        rhod0 = rho0(1,1,k)/(1.0+qv0(1,1,k))
+        rhod0 = rho0(1,1,k)
         cummass(k+1) = cummass(k) + rhod0*( zf(1,1,k+1)-zf(1,1,k) )
       enddo
       mcol = cummass(nk+1)
